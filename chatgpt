@@ -136,6 +136,7 @@ async function send_query(page, query) {
     debug("## streaming\n");
     let reply;
     let nretries = 0;
+    let more_count = 2
     while (true) {
         reply = await get_text(page, elem);
         if (reply.length > last_reply.length) { // Any addition?
@@ -146,7 +147,10 @@ async function send_query(page, query) {
             nretries++;
             // Wait TIMEOUT for consequtive reples at most.
             if (nretries > TIMEOUT / DELAY)
-                break;
+                more_count -= 1
+                if (more_count < 0) {
+                    break;
+                }
         }
         await sleep(DELAY);
     }
@@ -158,7 +162,10 @@ async function send_query(page, query) {
     console.log(lines[lines.length - 1]);
 // 最終行が 少なくともChatGPTで表示されない
     console.log("\n")
+    console.log(last_reply.split('\n')[last_reply.split('\n').length-3])
+    console.log(last_reply.split('\n')[last_reply.split('\n').length-2])
     console.log(last_reply.split('\n')[last_reply.split('\n').length-1])
+    console.log(last_reply.split('\n')[last_reply.split('\n').length])
 }
 
 function config_gemini() {
