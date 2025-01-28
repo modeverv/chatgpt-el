@@ -156,6 +156,9 @@ async function send_query(page, query) {
     // FIXME: This code may fail for a single-reply.
     console.log(lines[lines.length - 2]);
     console.log(lines[lines.length - 1]);
+// 最終行が 少なくともChatGPTで表示されない
+    console.log("\n")
+    console.log(last_reply.split('\n')[last_reply.split('\n').length-1])
 }
 
 function config_gemini() {
