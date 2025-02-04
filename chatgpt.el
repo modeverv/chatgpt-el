@@ -18,12 +18,14 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-(defvar chatgpt-prog "~/src/chatgpt-el/chatgpt")
+(defvar chatgpt-prog "~/src/chatgpt-el/chatgpt_mod")
 (defvar chatgpt-engine "ChatGPT")
 (defvar chatgpt-engines-alist '((?1 . "ChatGPT")
-				(?2 . "Gemini")
-				(?3 . "Claude")
-				(?4 . "DeepSeek")))
+                                (?2 . "Gemini")
+                                (?3 . "Claude")
+                                (?4 . "DeepSeek")
+                                (?5 . "Perplexity")
+                                ))
 
 (defvar chatgpt-prefix-alist
   '((?w . "Explain the following in Japanese with definition, pros, cons, examples, and issues:")
@@ -46,7 +48,7 @@
     ("^ *[0-9.]+ " . font-lock-type-face)
     ("^ *[*-] .*$" . font-lock-string-face)
     ;; constants
-    ("[A-Z_]\\{3,\\}" . font-lock-constant-face)	
+    ("[A-Z_]\\{3,\\}" . font-lock-constant-face)
     ;; strings
     ("【.+?】" . font-lock-constant-face)
     ("「.+?」" . font-lock-constant-face)
@@ -70,10 +72,10 @@
   ;; Local variables.
   (make-local-variable 'font-lock-defaults)
   (setq font-lock-defaults
-	'(chatgpt-font-lock-keywords 'keywords-only nil))
+        '(chatgpt-font-lock-keywords 'keywords-only nil))
   ;; (setq word-wrap t)
   (font-lock-mode 1))
-  
+
 ;; (chatgpt-send-query "which of Emacs or vi is better?")
 ;; (chatgpt-send-query "what is Emacs's interesting history?")
 (defun chatgpt-send-query (query)
@@ -85,10 +87,10 @@
       (chatgpt-mode)
       (setq mode-name (format "%s: initializing" chatgpt-engine))
       (setq chatgpt--process (start-process chatgpt-engine buf chatgpt-prog
-					    "-e" chatgpt-engine
-					    "-q" query))
+                                            "-e" chatgpt-engine
+                                            "-q" query))
       (set-process-sentinel chatgpt--process
-			    'chatgpt--process-sentinel)
+                            'chatgpt--process-sentinel)
       (set-process-filter chatgpt--process 'chatgpt--process-filter))
     ;; Display in the other window.
     (delete-other-windows)
@@ -104,15 +106,15 @@
 (defun chatgpt--process-filter (proc output)
   (with-current-buffer (process-buffer proc)
     (if (string-match "## \\([A-Za-z ]+\\)\n" output)
-	;; Status message?
-	(setq mode-name (format "%s: %s" chatgpt-engine (match-string 1 output)))
+        ;; Status message?
+        (setq mode-name (format "%s: %s" chatgpt-engine (match-string 1 output)))
       ;; Otherwise, display at the end of the buffer.
       (setq mode-name (format "%s: streaming @ %d" chatgpt-engine (point-max)))
       (save-excursion
-	(goto-char (point-max))
-	(insert output)
-	;; FIXME: Do not repeatedly format alyread-formatted part.
-	(chatgpt--format-buffer)))))
+        (goto-char (point-max))
+        (insert output)
+        ;; FIXME: Do not repeatedly format alyread-formatted part.
+        (chatgpt--format-buffer)))))
 
 (defun chatgpt--format-buffer ()
   (save-excursion
@@ -130,27 +132,27 @@
 
 (defun chatgpt-extract-reply ()
   (let ((reply (with-current-buffer (chatgpt--buffer-name)
-		 (buffer-string))))
+                 (buffer-string))))
     (with-temp-buffer
       (insert reply)
       (goto-char (point-min))
       (while (re-search-forward "## .*\n" nil t)
-	(replace-match ""))
+        (replace-match ""))
       (buffer-string))))
 
 ;; (chatgpt-lookup "Emacs")
 (defun chatgpt-lookup (query)
   (interactive (list (read-string (format "%s lookup: " chatgpt-engine)
-				  (thing-at-point 'word))))
+                                  (thing-at-point 'word))))
   (chatgpt-send-query query))
 
 (defun chatgpt--read-prefix ()
   (let* ((ch (read-char
-	      "Prefix ([w]hat/[s]ummary/[j]a/[e]n/[p]roof/[P]roof/[r]ewrite/{R]ewrite/[d]oc): "))
-	 (elem (assoc ch chatgpt-prefix-alist))
-	 (prefix (cdr elem)))
+              "Prefix ([w]hat/[s]ummary/[j]a/[e]n/[p]roof/[P]roof/[r]ewrite/{R]ewrite/[d]oc): "))
+         (elem (assoc ch chatgpt-prefix-alist))
+         (prefix (cdr elem)))
     (if prefix
-	(concat prefix " ")
+        (concat prefix " ")
       nil)))
 
 (defun chatgpt--read-query (prefix)
@@ -166,16 +168,16 @@
       (setq query (thing-at-point 'word)))
      ;; Possibly, at the end line.
      (t
-      (setq query (string-trim 
-		   (or (thing-at-point 'paragraph) "")))
+      (setq query (string-trim
+                   (or (thing-at-point 'paragraph) "")))
       (setq beg-pos (save-excursion
-		      (search-backward query nil t)
-		      (point)))
+                      (search-backward query nil t)
+                      (point)))
       (setq end-pos (point))))
     ;; Remove the preceeding Q.
     (setq query (replace-regexp-in-string "^Q\\. *" "" query))
     (setq query (read-string (format "%s query: " chatgpt-engine)
-			     (concat prefix query)))
+                             (concat prefix query)))
     ;; Record the region used as the query.
     (setq chatgpt--last-query-beg beg-pos)
     (setq chatgpt--last-query-end end-pos)
@@ -185,11 +187,11 @@
 (defun chatgpt-query (arg)
   (interactive "P")
   (let ((prefix "")
-	query)
+        query)
     (cond ((equal arg '(16))
-	   (chatgpt-select-engine))
-	  (arg
-	   (setq prefix (chatgpt--read-prefix))))
+           (chatgpt-select-engine))
+          (arg
+           (setq prefix (chatgpt--read-prefix))))
     (unless query
       (setq query (chatgpt--read-query prefix)))
     (chatgpt-send-query (concat prefix query))))
@@ -200,7 +202,7 @@
   (interactive "P")
   ;; With C-u C-u prefix, delete the region used as the query.
   (when (and (equal arg '(16))
-	     (< chatgpt--last-query-end (point-max)))
+             (< chatgpt--last-query-end (point-max)))
     (delete-region chatgpt--last-query-beg chatgpt--last-query-end))
   (save-restriction
     (narrow-to-region (point) (point))
@@ -214,18 +216,34 @@
 (defun chatgpt-save-reply ()
   (interactive)
   (let* ((save-silently t)
-	 (base (format-time-string "%Y%m%d-%H%M%S"))
-	 (file (format "~/var/log/chatgpt/%s-%s" chatgpt-engine base)))
+         (base (format-time-string "%Y%m%d-%H%M%S"))
+         ;; TODO delete for debug
+         (file (format "~/var/log/chatgpt/%s-%s" chatgpt-engine base)))
     (with-temp-buffer
       (insert "\n")
+      (chatgpt-insert-reply '(4))
+      (write-region (point-min) (point-max) file 'append))))
+
+(defun chatgpt-save-reply ()
+
+  (interactive)
+  (let* ((save-silently t)
+         (base (format-time-string "%Y%m%d-%H%M%S"))
+         (dir "~/var/log/chatgpt")
+         (file (format "%s/%s-%s" dir chatgpt-engine base)))
+    ;; ディレクトリが存在しない場合は作成
+    (unless (file-directory-p (expand-file-name dir))
+      (make-directory (expand-file-name dir) t))
+    (with-temp-buffer
+      (insert "\n")
       (chatgpt-insert-reply '(4))
       (write-region (point-min) (point-max) file 'append))))
 
 ;; (chatgpt-select-engine)
 (defun chatgpt-select-engine ()
   (interactive)
-  (let ((key (read-char-choice "Select engine (1: ChatGPT, 2: Gemini, 3: Claude, 4: DeepSeek): "
-			       (mapcar #'car chatgpt-engines-alist))))
+  (let ((key (read-char-choice "Select engine (1: ChatGPT, 2: Gemini, 3: Claude, 4: DeepSeek, 5: Perplexity): "
+                               (mapcar #'car chatgpt-engines-alist))))
     (setq chatgpt-engine (cdr (assoc key chatgpt-engines-alist)))))
 
 (provide 'chatgpt)

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-// https://pptr.dev/
 const puppeteer = require('puppeteer-core');
 const convert = require('html-to-text');
 
@@ -14,6 +13,38 @@ let FORM_SELECTOR = 'p.placeholder';
 let BUTTON_SELECTOR = 'button[data-testid="send-button"]';
 let REPLY_SELECTOR = 'div[data-message-author-role="assistant"]';
 let REPLY_PER_QUERY = 1;
+
+// フォーカス制御のための関数
+async function focusEmacs() {
+    const { exec } = require('child_process');
+    return new Promise((resolve, reject) => {
+        exec('osascript -e \'tell application "Emacs" to activate\'', (error, stdout, stderr) => {
+            if (error) {
+                debug(`Failed to focus Emacs: ${error}\n`);
+                reject(error);
+            } else {
+                resolve();
+            }
+        });
+    });
+}
+
+async function focusEmacs() {
+    const { exec } = require('child_process');
+    // 少し待ってからフォーカスを変更
+    await sleep(500);
+    return new Promise((resolve, reject) => {
+        exec('osascript -e \'tell application "Emacs" to activate\'', (error, stdout, stderr) => {
+            if (error) {
+                debug(`Failed to focus Emacs: ${error}\n`);
+                reject(error);
+            } else {
+                resolve();
+            }
+        });
+    });
+}
+
 
 function debug(msg) {
     if (DEBUG) {
@@ -29,14 +60,12 @@ async function connect_to_browser() {
     debug("## connecting\n");
     let browser;
     try {
-        // FIXME: Port number should be configurable.
         browser = await puppeteer.connect({
             browserURL: 'http://localhost:9000',
-            // Use the view area as much as possible.
             defaultViewport: null,
         });
     } catch (err) {
-        debug('Connection failed: unnable to connect localhost:9000\n');
+        debug('Connection failed: unable to connect localhost:9000\n');
         process.exit(1);
     }
     return browser;
@@ -46,14 +75,12 @@ async function open_page(browser) {
     debug('## opening\n');
     const pages = await browser.pages();
     for (const page of pages) {
-        // Try to find the page visiting PAGE_URL.
         const url = page.url();
         if (url.indexOf(PAGE_URL) >= 0) {
             await page.bringToFront();
             return page;
         }
     }
-    // Newly open the page if not already visiting.
     const page = pages[0];
     await page.bringToFront();
     await page.goto(PAGE_URL);
@@ -61,7 +88,6 @@ async function open_page(browser) {
 }
 
 async function get_text(page, elem) {
-    // Covert the HTML at ELEM to text format.
     const html = await page.evaluate(el => el.innerHTML, elem);
     let text = convert.convert(html, {
         preserveNewlines: true,
@@ -71,11 +97,9 @@ async function get_text(page, elem) {
     return text;
 }
 
-// FIXME: Code fragments in Markdown format will be truncated.
 function display_diff(last_reply, reply) {
     const last_lines = last_reply.split('\n');
     const lines = reply.split('\n');
-    // The last line is not displayed since it may change later.
     for (let n = last_lines.length - 2; n < lines.length - 2; n++)
         console.log(lines[n]);
 }
@@ -83,26 +107,24 @@ function display_diff(last_reply, reply) {
 async function send_query(page, query) {
     debug("## sending\n");
     if (FORM_SELECTOR.startsWith('textarea')) {
-	await page.type(FORM_SELECTOR, query);
+        await page.type(FORM_SELECTOR, query);
     } else {
-	await page.$eval(FORM_SELECTOR, (el, str) => el.innerText = str, query);
+        await page.$eval(FORM_SELECTOR, (el, str) => el.innerText = str, query);
     }
+    
     let prev_elems;
     if (BUTTON_SELECTOR == 'press_enter') {
-	prev_elems = await page.$$(REPLY_SELECTOR);
-	await page.keyboard.press('Enter');
+        prev_elems = await page.$$(REPLY_SELECTOR);
+        await page.keyboard.press('Enter');
     } else {
-	const button = await page.waitForSelector(BUTTON_SELECTOR);
-	// Record all already-displayed reples.
-	prev_elems = await page.$$(REPLY_SELECTOR);
-	await button.click();
+        const button = await page.waitForSelector(BUTTON_SELECTOR);
+        prev_elems = await page.$$(REPLY_SELECTOR);
+        await button.click();
     }
 
-    // Wait until reply starts displaying.
     debug("## waiting display\n");
     while (true) {
         const elems = await page.$$(REPLY_SELECTOR);
-        // ChatGPT and Gemini generate a single DIV, whereas Claude does two.
         if (elems.length - prev_elems.length >= REPLY_PER_QUERY) {
             break;
         }
@@ -112,9 +134,8 @@ async function send_query(page, query) {
     debug("## waiting initial\n");
     let elem;
     let last_reply = '';
-    let nretires = 0;
+    let nretries = 0;
     while (true) {
-        // NOTE: This code seems redundant but required for ChatGPT.
         const elems = await page.$$(REPLY_SELECTOR);
         elem = elems[elems.length - 1];
         const reply = await get_text(page, elem);
@@ -124,48 +145,41 @@ async function send_query(page, query) {
             break;
         }
         await sleep(DELAY);
-        nretires++;
-        // Wait 10 seconds for the initial reply at most.
-        if (nretires > 10000 / DELAY) {
+        nretries++;
+        if (nretries > 10000 / DELAY) {
             console.log(`No initial reply from ${ENGINE}.`);
             return;
         }
     }
 
-    // Fetch the remaining reply.
     debug("## streaming\n");
     let reply;
-    let nretries = 0;
-    let more_count = 2
+//    let nretries = 0;
     while (true) {
         reply = await get_text(page, elem);
-        if (reply.length > last_reply.length) { // Any addition?
+        if (reply.length > last_reply.length) {
             display_diff(last_reply, reply);
             last_reply = reply;
             nretries = 0;
         } else {
             nretries++;
-            // Wait TIMEOUT for consequtive reples at most.
             if (nretries > TIMEOUT / DELAY)
-                more_count -= 1
-                if (more_count < 0) {
-                    break;
-                }
+                break;
         }
         await sleep(DELAY);
     }
-    // Display the last line.
+
     debug("## closed\n");
     const lines = reply.split('\n');
-    // FIXME: This code may fail for a single-reply.
     console.log(lines[lines.length - 2]);
     console.log(lines[lines.length - 1]);
-// 最終行が 少なくともChatGPTで表示されない
-    console.log("\n")
-    console.log(last_reply.split('\n')[last_reply.split('\n').length-3])
-    console.log(last_reply.split('\n')[last_reply.split('\n').length-2])
-    console.log(last_reply.split('\n')[last_reply.split('\n').length-1])
-    console.log(last_reply.split('\n')[last_reply.split('\n').length])
+
+    // Emacsにフォーカスを戻す
+    try {
+        await focusEmacs();
+    } catch (error) {
+        debug('Failed to switch focus to Emacs\n');
+    }
 }
 
 function config_gemini() {
@@ -186,81 +200,28 @@ function config_claude() {
     REPLY_PER_QUERY = 2;
 }
 
-function config_grok() {
-    ENGINE = 'Grok';
-    PAGE_URL = 'https://x.com/i/grok';
-    FORM_SELECTOR = 'textarea[placeholder="Ask anything"]';
-    BUTTON_SELECTOR = 'button[aria-label="Grok something"]';
-    REPLY_SELECTOR = 'span[style="text-overflow: unset;"]'; // FIXME
-    REPLY_PER_QUERY = 2;
-}
-
 function config_deepseek() {
     ENGINE = 'DeepSeek';
     PAGE_URL = 'https://chat.deepseek.com';
     FORM_SELECTOR = 'textarea#chat-input';
-    BUTTON_SELECTOR = 'press_enter'; // FIXME
-    REPLY_SELECTOR = 'div[class="ds-markdown ds-markdown--block"]'; // FIXME
+    BUTTON_SELECTOR = 'press_enter';
+    REPLY_SELECTOR = 'div[class="ds-markdown ds-markdown--block"]';
     REPLY_PER_QUERY = 1;
 }
 
-// フォーカス制御のための関数
-async function focusEmacs() {
-    const { exec } = require('child_process');
-    return new Promise((resolve, reject) => {
-        exec('osascript -e \'tell application "Emacs" to activate\'', (error, stdout, stderr) => {
-            if (error) {
-                debug(`Failed to focus Emacs: ${error}\n`);
-                reject(error);
-            } else {
-                resolve();
-            }
-        });
-    });
+function config_perplexity() {
+    ENGINE = 'Perplexity';
+    PAGE_URL = 'https://www.perplexity.ai';
+    FORM_SELECTOR = 'textarea[placeholder]';
+    BUTTON_SELECTOR = 'press_enter';
+    REPLY_SELECTOR = 'div[dir="auto"]';
+//    REPLY_SELECTOR = 'div[class="prose text-pretty"]';
+//    REPLY_PER_QUERY = 1;
+    REPLY_PER_QUERY = 1;
 }
-
-// send_query関数の修正版
-async function send_query(page, query) {
-    debug("## sending\n");
-    if (FORM_SELECTOR.startsWith('textarea')) {
-        await page.type(FORM_SELECTOR, query);
-    } else {
-        await page.$eval(FORM_SELECTOR, (el, str) => el.innerText = str, query);
-    }
-    
-    let prev_elems;
-    if (BUTTON_SELECTOR == 'press_enter') {
-        prev_elems = await page.$$(REPLY_SELECTOR);
-        await page.keyboard.press('Enter');
-    } else {
-        const button = await page.waitForSelector(BUTTON_SELECTOR);
-        prev_elems = await page.$$(REPLY_SELECTOR);
-        await button.click();
-    }
+// <div dir="auto"><div class="prose text-pretty dark:prose-invert inline leading-normal break-words min-w-0 [word-break:break-word]"><span>大学と高校のテストには大きな違いがあります。以下に主な特徴を説明します。</span>
 
 
-    debug("## waiting display\n");
-    while (true) {
-        const elems = await page.$$(REPLY_SELECTOR);
-        if (elems.length - prev_elems.length >= REPLY_PER_QUERY) {
-            break;
-        }
-        await sleep(200);
-    }
-
-    // レスポンスの処理が完了したら
-    debug("## closed\n");
-    const lines = reply.split('\n');
-    console.log(lines[lines.length - 2]);
-    console.log(lines[lines.length - 1]);
-
-    // Emacsにフォーカスを戻す
-    try {
-        await focusEmacs();
-    } catch (error) {
-        debug('Failed to switch focus to Emacs\n');
-    }
-}
 
 // プラットフォームチェックを追加
 function check_platform() {
@@ -272,23 +233,21 @@ function check_platform() {
 
 function main() {
     check_platform();
-    // argv[2] is the first user-specified argument.
+    
     let n = 2;
-    // Parse options and arguments.
     while (n < process.argv.length) {
         const arg = process.argv[n];
         if (arg == '-e') {
             let engine = process.argv[n + 1];
             engine = engine.toLowerCase();
-            // Use ChatGPT by default.
             if (engine == 'gemini')
                 config_gemini();
             if (engine == 'claude')
                 config_claude();
-            if (engine == 'grok')
-                config_grok();
             if (engine == 'deepseek')
                 config_deepseek();
+            if (engine == 'perplexity')
+                config_perplexity();
             n += 2;
         } else if (arg == '-i') {
             (async () => {
