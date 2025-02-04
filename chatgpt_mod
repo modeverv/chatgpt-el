@@ -61,7 +61,8 @@ async function connect_to_browser() {
     let browser;
     try {
         browser = await puppeteer.connect({
-            browserURL: 'http://localhost:9000',
+//            browserURL: 'http://localhost:9000',
+            browserURL: 'http://127.0.0.1:9000',
             defaultViewport: null,
         });
     } catch (err) {
