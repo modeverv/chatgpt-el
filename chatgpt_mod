@@ -5,7 +5,7 @@ const convert = require('html-to-text');
 
 const DEBUG = true;
 const DELAY = 100; // ms
-const TIMEOUT = 3000; // ms
+const TIMEOUT = 300000; // ms
 
 let ENGINE = 'ChatGPT';
 let PAGE_URL = 'https://chatgpt.com/';
