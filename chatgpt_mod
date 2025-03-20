@@ -5,7 +5,7 @@ const convert = require('html-to-text');
 
 const DEBUG = true;
 const DELAY = 100; // ms
-const TIMEOUT = 15000; // ms
+const TIMEOUT = 10000; // ms
 
 let ENGINE = 'ChatGPT';
 let PAGE_URL = 'https://chatgpt.com/';
@@ -101,7 +101,9 @@ async function get_text(page, elem) {
 function display_diff(last_reply, reply) {
     const last_lines = last_reply.split('\n');
     const lines = reply.split('\n');
-    for (let n = last_lines.length - 2; n < lines.length - 2; n++)
+//    for (let n = last_lines.length - 2; n < lines.length - 2; n++)
+//        console.log(lines[n]);
+    for (let n = last_lines.length - 1; n < lines.length - 1; n++)
         console.log(lines[n]);
 }
 
@@ -131,7 +133,6 @@ async function send_query(page, query) {
         await button.click();
     }
 
-    await sleep(1000)
     await focusEmacs();
 
     debug("## waiting display\n");
@@ -174,8 +175,10 @@ async function send_query(page, query) {
             nretries = 0;
         } else {
             nretries++;
-            if (nretries > TIMEOUT / DELAY)
+            if (nretries > TIMEOUT / DELAY) {
+                reply = await get_text(page, elem);
                 break;
+            }
         }
         await sleep(DELAY);
     }
@@ -184,6 +187,7 @@ async function send_query(page, query) {
     const lines = reply.split('\n');
     console.log(lines[lines.length - 2]);
     console.log(lines[lines.length - 1]);
+    console.log(lines[lines.length - 0]);
 
     // Emacsにフォーカスを戻す
     try {
