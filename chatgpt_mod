@@ -5,7 +5,7 @@ const convert = require('html-to-text');
 
 const DEBUG = true;
 const DELAY = 100; // ms
-const TIMEOUT = 8000; // ms
+const TIMEOUT = 15000; // ms
 
 let ENGINE = 'ChatGPT';
 let PAGE_URL = 'https://chatgpt.com/';
@@ -14,7 +14,7 @@ let BUTTON_SELECTOR = 'button[data-testid="send-button"]';
 let REPLY_SELECTOR = 'div[data-message-author-role="assistant"]';
 let REPLY_PER_QUERY = 1;
 
-// フォーカス制御のための関数
+// フォーカス\制御のための関数
 async function focusEmacs() {
     const { exec } = require('child_process');
     return new Promise((resolve, reject) => {
@@ -32,9 +32,9 @@ async function focusEmacs() {
 async function focusEmacs() {
     const { exec } = require('child_process');
     // 少し待ってからフォーカスを変更
-    await sleep(500);
+    await sleep(3000);
     return new Promise((resolve, reject) => {
-        exec('osascript -e \'tell application "Emacs" to activate\'', (error, stdout, stderr) => {
+        exec("osascript -e 'tell application \"Emacs\" to activate'", (error, stdout, stderr) => {
             if (error) {
                 debug(`Failed to focus Emacs: ${error}\n`);
                 reject(error);
@@ -61,8 +61,8 @@ async function connect_to_browser() {
     let browser;
     try {
         browser = await puppeteer.connect({
-//            browserURL: 'http://localhost:9000',
-            browserURL: 'http://127.0.0.1:9000',
+            browserURL: 'http://localhost:9000',
+//            browserURL: 'http://127.0.0.1:9000',
             defaultViewport: null,
         });
     } catch (err) {
@@ -108,20 +108,31 @@ function display_diff(last_reply, reply) {
 async function send_query(page, query) {
     debug("## sending\n");
     if (FORM_SELECTOR.startsWith('textarea')) {
+        debug("## sending1\n");
         await page.type(FORM_SELECTOR, query);
     } else {
-        await page.$eval(FORM_SELECTOR, (el, str) => el.innerText = str, query);
+        //await page.$eval(FORM_SELECTOR, (el, str) => el.innerText = str, query)
+        await page.$eval(FORM_SELECTOR, (el, str) => {
+            el.innerText = str;
+            // 変更を検知させるためのイベントを発火
+            const event = new Event('input', { bubbles: true });
+            el.dispatchEvent(event);
+        }, query);
     }
-    
+
     let prev_elems;
     if (BUTTON_SELECTOR == 'press_enter') {
         prev_elems = await page.$$(REPLY_SELECTOR);
         await page.keyboard.press('Enter');
     } else {
+        await page.keyboard.press('Enter');
         const button = await page.waitForSelector(BUTTON_SELECTOR);
         prev_elems = await page.$$(REPLY_SELECTOR);
         await button.click();
     }
+
+    await sleep(1000)
+    await focusEmacs();
 
     debug("## waiting display\n");
     while (true) {
@@ -152,7 +163,6 @@ async function send_query(page, query) {
             return;
         }
     }
-
     debug("## streaming\n");
     let reply;
 //    let nretries = 0;
@@ -177,6 +187,7 @@ async function send_query(page, query) {
 
     // Emacsにフォーカスを戻す
     try {
+        await sleep(1000)
         await focusEmacs();
     } catch (error) {
         debug('Failed to switch focus to Emacs\n');
@@ -196,7 +207,9 @@ function config_claude() {
     ENGINE = 'Claude';
     PAGE_URL = 'https://claude.ai/';
     FORM_SELECTOR = 'p[data-placeholder]';
-    BUTTON_SELECTOR = 'button[aria-label="Send Message"]';
+//    FORM_SELECTOR = "div[aria-label='クロードにプロンプトを入力
+//してください']";
+    BUTTON_SELECTOR = "button[aria-label='メッセージを送信']";
     REPLY_SELECTOR = 'div[data-test-render-count]';
     REPLY_PER_QUERY = 2;
 }
@@ -232,9 +245,13 @@ function check_platform() {
     }
 }
 
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function main() {
     check_platform();
-    
+
     let n = 2;
     while (n < process.argv.length) {
         const arg = process.argv[n];
@@ -261,7 +278,9 @@ function main() {
             (async () => {
                 const query = process.argv[n + 1];
                 const browser = await connect_to_browser();
+                await sleep(1000)
                 const page = await open_page(browser);
+                await sleep(1000)
                 await send_query(page, query);
                 process.exit(0);
             })();
