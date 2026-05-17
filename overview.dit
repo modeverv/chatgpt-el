@@ -2,23 +2,22 @@
 
 
 
-                                                                        
-              Emacs                                                  Chromium/Chrome   
+
+              Emacs                                                  Chromium/Chrome
      +----------------------+   sending process               +--------------------------+
-     | hello                |                                 | ChatGPT                  |
-     |                      | send query to STDOUT            |                          |
+     | hello                |                                 | ChatGPT/Gemini/Claude... |
+     |                      |                                 |                          |
      |                      +---+                             | how can I help you?      |
-     |                      |   |                             |                          |
+     |                      |   | send prompt via -s          |                          |
      +----------------------+   |                             |                          |
      | how can I help you?  |   |                             |     +--------------+     |
-     |                      |   |        chatgpt              |     | hello        |     |
-     |                      |   |     (Node.js script)        |     +--------------+     |
-     +----------------------+   |    +---------------+        +--------------------------+
-               ^                +--->| - talk CDP    |    localhost:9000    ^ 
-               |                     | - parse HTML  |                      |  
-               +---------------------| - watch reply |<---------------------+                  
-         receive reply from STDIN    |               |         CDP (Chromium DevTools Protocol)
-                                     +---------------+                     
-          receiving process                                                
-                                                                           
-       
+     |                      |   |        chatgpt-cdp          |     | hello        |     |
+     |                      |   |     (Python script)         |     +--------------+     |
+     +----------------------+   |    +----------------+       +--------------------------+
+               ^                +--->| talk CDP       |                     ^  localhost:9000
+               |                     | parse HTML     |                     |
+               +---------------------| watch response |<--------------------+
+         receive reply from STDIN    |                |         CDP (Chromium DevTools Protocol)
+                via -r               +----------------+
+
+          receiving process

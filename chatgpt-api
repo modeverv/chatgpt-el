@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+#
+# A simple ChatGPT/Gemini/Ollama client using API.
+# Copyright (c) 2025, Hiroyuki Ohsaki.
+# All rights reserved.
+#
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+import collections
+import json
+import os
+import re
+import requests
+import sys
+
+from perlcompat import die, warn, getopts
+import google.genai
+import openai
+import tbdump
+
+OLLAMA_URL = 'http://vcserv:11434/api/generate'
+OLLAMA_MODEL = 'gemma4:26b'
+
+INSTRUCTIONS = """\
+# Role
+あなたは、論理的一貫性と事実の正確性を最優先する、客観的・批判的分析に長けた AI アドバイザです。ユーザーへの迎合や忖度ではなく、論理的誤謬を排した回答を行ってください。
+
+# Audience
+読者は工学系の大学教員です。学部レベルの数学、物理、計算機科学の基礎知識は既知として扱ってください。
+
+# Style & Format
+- 自然で正確な日本語を用い、Markdown 形式で記述してください。
+- 段落や箇条書きを適切に用いて可読性を確保してください。
+- 専門用語の初出時には英語を括弧書きで併記してください。固有名詞は Title Case、それ以外は lowercase phrase とします。
+- 不要な反復を避け、情報密度を高く保ってください。
+
+# Guidelines
+- 社会通念や感情的言説ではなく、物理的制約、数学的定義、経済的合理性、法理学的整合性などの第一原理 (first principles) から論理を構築してください。
+- ユーザーの主張や期待に論理的矛盾があれば、明示的に指摘してください。
+- 回答の優先順位は、論理的正当性、事実の正確性、ユーザーへの配慮の順とします。
+- 提示された言説の論理的一貫性を検証し、二重基準や情緒的レトリックがあれば、その構造と意図を分析してください。
+- 事実とエビデンスを重視し、不確実な点は推測せず、「情報が確認できなかった」と明記してください。
+- 表面的説明にとどまらず、概念の背景にある原理、原因、構造を説明し、必要に応じて歴史的背景や類似概念も補足してください。
+
+# Japanese Style
+- 書き言葉として自然で正確な日本語を用いてください。
+- 口語的すぎる表現、流行語、軽い比喩表現は避けてください。
+- 教科書、技術文書、論文要約に近い落ち着いた文体にしてください。
+- 「ズバリ」「勝ち筋」「見えてきた」「賭ける」「見た目依存」などの表現は使わないでください。
+- プログラム、アルゴリズム、設計、実装に対して、「危うい」「脆い」「死ぬ」「依存すぎる」「弱い」「壊れている」などの口語的・印象的表現は避けてください。
+- 代わりに、「停止する」「異常終了する」「頑健性が低い」「安定性に課題がある」「整合していない」「仕様を満たしていない」「性能上の制約がある」など、意味が明確な表現を用いてください。
+"""
+
+def usage():
+    die(f"""\
+usage: {sys.argv[0]} [-vl] [-e engine] [-m model] [-i inst] [-s prompt] [-O path]
+  -v         verbose mode
+  -l         list available modes
+  -e engine  specify engine (default: ollama)
+  -m model   specify LLM model (default: qwen-2.5:14b)
+  -i inst    specify system instructions
+  -s prompt  prompt string
+  -O path    output image filename
+""")
+
+# Ollama ----------------------------------------------------------------
+class Ollama:
+    def __init__(self, model=None, inst='', max_tokens=8192, temp=.1):
+        if model is None:
+            model = OLLAMA_MODEL
+        self.model = model
+        self.inst = inst
+        self.max_tokens = max_tokens
+        self.temp = temp
+        self._line_counts = collections.defaultdict(int)
+        self._line_buf = ''
+        self._output_size = 0
+
+    def expand_macros(self, astr):
+        def _include(match):
+            file = match.group(1).strip()
+            file = file.replace('~', os.getenv('HOME'))
+            try:
+                with open(file) as f:
+                    return f.read()
+            except FileNotFoundError:
+                return match.group(0)
+
+        pattern = re.compile(r'\[\[(.+?)\]\]')
+        return pattern.sub(_include, astr)
+
+    def list_models(self):
+        print("""\
+NAME               ID              SIZE      MODIFIED       
+qwen3.5:27b        7653528ba5cb    17 GB     12 minutes ago    
+kimi-k2.5:cloud    6d1c3246c608    -         54 minutes ago    
+gemma4:31b         6316f0629137    19 GB     19 hours ago      
+gpt-oss:latest     17052f91a42e    13 GB     19 hours ago      
+gemma4:e4b         c6eb396dbd59    9.6 GB    19 hours ago      
+gemma4:26b         5571076f3d70    17 GB     20 hours ago""")
+
+    def _print(self, buf):
+        sys.stdout.write(buf)
+        sys.stdout.flush()
+        self._line_buf += buf
+        self._output_size += len(buf)
+        if self._output_size > 20000:
+            raise RuntimeError(f'Too long output: {self._output_size}')
+        while '\n' in self._line_buf:
+            line, rest = self._line_buf.split('\n', 1)
+            self._line_buf = rest
+            if len(line) >= 16:
+                self._line_counts[line] += 1
+                if self._line_counts[line] > 100:
+                    raise RuntimeError(f'Too many repeate lines: {line}')
+
+    def send_prompt(self, prompt, outfile):
+        prompt = self.expand_macros(prompt)
+        payload = {
+            'model': self.model, 'system': self.inst, 'prompt': prompt,
+            'stream': True, 'num_predict': self.max_tokens, 'think': False,
+            'options': {'temperature': self.temp, 'num_ctx': 4096 * 2}
+        }
+        response = requests.post(OLLAMA_URL,
+                                 json=payload,
+                                 stream=True,
+                                 headers={'Content-Type': 'application/json'})
+        try:
+            response.raise_for_status()
+        except Exception as e:
+            die(f'{e}')
+
+        print(f'[{self.model}]', flush=True)
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            line = line.replace(b'\\n', b'__NEWLINE__')
+            data = json.loads(line)
+            if 'response' in data:
+                token = data['response']
+                token = token.replace('__NEWLINE__', '\n')
+                self._print(token)
+        print()
+
+# ChatGPT ----------------------------------------------------------------
+class ChatGPT(Ollama):
+    def __init__(self, model=None, *args, **kwargs):
+        if model is None:
+            model = 'gpt-5.4-mini'
+        super().__init__(model=model, *args, **kwargs)
+        self.client = openai.OpenAI()
+
+    def list_models(self):
+        print("""\
+model          output  intel  speed  cutoff
+gpt-5-nano     $0.4    2      5      2024-05-31
+gpt-5.4-nano   $1.25   2      5      2025-08-31
+gpt-5-mini     $2      3      4      2024-05-31
+o4-mini        $4.4    R4     3      2025-06-01
+o3-mini        $4.4    R4     3      2024-10-01
+gpt-5.4-mini   $4.5    3      4      2025-08-31
+o3             $8      R5     2      2024-06-01
+gpt-5.1        $10     4      4      2024-09-30
+gpt-5.2        $14     4      4      2025-08-31
+gpt-5.4        $15     5      4      2025-08-31
+gpt-4o         $10     3      3      2023-10-01
+gpt-4-turbo    $30     2      3      2023-12-01
+o1             $60     R4     1      2023-10-01
+gpt-5.4-pro    $90     5      2      2025-08-31
+gpt-5.2-pro    $168    5      1      2025-08-31""")
+
+    def send_prompt(self, prompt, outfile):
+        prompt = self.expand_macros(prompt)
+        params = dict(
+            model=self.model,
+            instructions=self.inst,
+            input=prompt,
+            stream=True,
+            max_output_tokens=self.max_tokens,
+        )
+        if not self.model.startswith(('gpt-5', 'o')):
+            params["temperature"] = self.temp
+        try:
+            stream = self.client.responses.create(**params)
+        except Exception as e:
+            die(f'{e}')
+
+        print(f'[{self.model}]')
+        for event in stream:
+            try:
+                delta = event.delta
+                self._print(delta)
+            except AttributeError:
+                pass
+        print()
+
+# Gemini ----------------------------------------------------------------
+class Gemini(Ollama):
+    def __init__(self, model=None, *args, **kwargs):
+        if model is None:
+            model = 'gemini-3.1-flash'
+        super().__init__(model=model, *args, **kwargs)
+        api_key = os.environ.get('GOOGLE_API_KEY')
+        self.client = google.genai.Client(api_key=api_key)
+
+    def list_all_models(self):
+        for model in self.client.models.list():
+            # Clean up model name for display (remove 'models/' prefix).
+            name = model.name.replace('models/', '')
+            disp_name = model.display_name
+            methods = ', '.join(model.supported_actions or [])
+            print(f'{name}\t{disp_name}\t{methods}')
+
+    def list_models(self):
+        print("""\
+model                          output   input    speed        context
+gemini-3.1-flash-lite-preview  $1.5     $0.25    Instant      1M
+gemini-3.1-flash               $3       $0.5     Fastest      1M
+gemini-2.5-flash               $2.5     $0.3     Fast         2M
+gemini-3.1-pro-preview         $12* $2* Variable** 1M
+gemini-2.5-pro                 $10      $1.25    Medium       2M
+imagen-4.0-fast                $0.02    n/a      Fast         n/a
+imagen-4.0-standard            $0.04    n/a      Medium       n/a
+gemini-3.1-flash-image-preview $0.067   $0.25    Fast         128k
+gemini-3-pro-image-preview     $0.134   $2       Medium       65k
+""")
+
+    def _safety_settings(self):
+        setting = google.genai.types.SafetySetting
+        category = google.genai.types.HarmCategory
+        thresh_none = google.genai.types.HarmBlockThreshold.BLOCK_NONE
+        safety_settings = [
+            setting(category=category.HARM_CATEGORY_HARASSMENT,
+                    threshold=thresh_none),
+            setting(category=category.HARM_CATEGORY_HATE_SPEECH,
+                    threshold=thresh_none),
+            setting(category=category.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                    threshold=thresh_none),
+            setting(category=category.HARM_CATEGORY_DANGEROUS_CONTENT,
+                    threshold=thresh_none),
+        ]
+        return safety_settings
+
+    def _send_prompt(self, prompt, outfile):
+        # Configure generation parameters including safety settings.
+        # We explicitly set all safety thresholds to BLOCK_NONE to minimize filtering.
+        config = google.genai.types.GenerateContentConfig(
+            temperature=self.temp,
+            system_instruction=self.inst,
+            safety_settings=self._safety_settings())
+
+        # Use streaming to display the response incrementally as it is generated.
+        try:
+            stream = self.client.models.generate_content_stream(
+                model=self.model, contents=prompt, config=config)
+            print(f'[{self.model}]')
+            for chunk in stream:
+                if chunk.text:
+                    self._print(chunk.text)
+            print()
+        except Exception as e:
+            die(f'{e}')
+
+    def _generate_image_imagen(self, prompt, outfile):
+        config = google.genai.types.GenerateImagesConfig(
+            number_of_images=1,
+            safety_filter_level='block_low_and_above',
+            include_rai_reason=True)
+        response = self.client.models.generate_images(model=self.model,
+                                                      prompt=prompt,
+                                                      config=config)
+        if response.generated_images:
+            image_data = response.generated_images[0].image.image_bytes
+            print(f'Writing image to {outfile}...')
+            with open(outfile, 'wb') as f:
+                f.write(image_data)
+        else:
+            print(f'No images returned from model {self.model}.')
+            if response.text:
+                print(f'Response text: {response.text}')
+
+    def _generate_image_gemini(self, prompt, outfile):
+        config = google.genai.types.GenerateContentConfig(
+            temperature=self.temp, safety_settings=self._safety_settings())
+        response = self.client.models.generate_content(model=self.model,
+                                                       contents=prompt,
+                                                       config=config)
+
+        image_found = False
+        # Parse the response to find any inline binary data (images).
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.inline_data:
+                    print(f'Writing inline image to {outfile}...')
+                    with open(outfile, 'wb') as f:
+                        f.write(part.inline_data.data)
+                    image_found = True
+                    break
+
+        if not image_found:
+            print(f'No inline image returned from model {self.model}.')
+            if response.text:
+                print(f'Response text: {response.text}')
+
+    def send_prompt(self, prompt, outfile):
+        prompt = self.expand_macros(prompt)
+        if 'imagen' in self.model:
+            self._generate_image_imagen(prompt, outfile)
+        elif 'image' in self.model:
+            self._generate_image_gemini(prompt, outfile)
+        else:
+            self._send_prompt(prompt, outfile)
+
+ENGINES = {'ollama': Ollama, 'chatgpt': ChatGPT, 'gemini': Gemini}
+
+def main():
+    opt = getopts('vle:m:i:s:O:') or usage()
+    verbose = opt.v
+    do_list = opt.l
+    engine = opt.e.lower() if opt.e else 'chatgpt'
+    model = opt.m
+    inst = opt.i or INSTRUCTIONS
+    prompt = opt.s
+    outfile = opt.O if opt.O else 'out.png'
+
+    cls_ = ENGINES[engine]
+    client = cls_(model=model, inst=inst)
+    if do_list:
+        client.list_models()
+    else:
+        if not prompt:
+            prompt = sys.stdin.read().strip()
+        client.send_prompt(prompt, outfile)
+
+if __name__ == "__main__":
+    main()
