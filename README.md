@@ -51,12 +51,14 @@ according to your environment.
 ;; chatgpt-el
 (autoload 'chatgpt-send "chatgpt" nil t)
 (autoload 'chatgpt-send-api "chatgpt" nil t)
+(autoload 'chatgpt-chat "chatgpt" nil t)
 (autoload 'chatgpt-insert-response "chatgpt" nil t)
 (autoload 'chatgpt-fill "chatgpt" nil t)
 (autoload 'chatgpt-select-engine "chatgpt" nil t)
 (autoload 'chatgpt-select-api-model "chatgpt" nil t)
 (global-set-key "\C-cb" 'chatgpt-send)
 (global-set-key "\C-cq" 'chatgpt-send-api)
+(global-set-key "\C-cc" 'chatgpt-chat)
 (global-set-key "\C-cQ" 'chatgpt-insert-response)
 (global-set-key "\C-cf" 'chatgpt-fill)
 (global-set-key "\C-cE" 'chatgpt-select-engine)
@@ -102,6 +104,34 @@ You can place `chatgpt-cdp` script anywhere in your system.
 
 7. You can change the AI engine to use by typing `C-c E` or executing M-x
    chatgpt-select-engine.
+
+## Text-only chat buffer
+
+You can also use a dedicated text-only chat buffer with `M-x chatgpt-chat`.
+This opens `*chatgpt chat*`, where the visible conversation is kept as
+Markdown-like text:
+
+```markdown
+## User
+
+Your prompt here.
+
+## Assistant
+
+The finalized response appears here.
+```
+
+Type the next query at the end of the current `## User` section and press
+`C-c C-c` to submit it.  While the browser response is in progress,
+`chatgpt-el` polls the existing CDP bridge in the hidden
+`*chatgpt chat raw*` buffer and shows the current status in
+`*chatgpt chat progress*`.  The chat buffer is updated only after the response
+is complete.  Press `C-c C-k` in the chat buffer to cancel the current browser
+polling process.
+
+The chat buffer uses the same browser/CDP prerequisites as `chatgpt-send`: a
+CDP-enabled browser must be running on port 9000, logged in, and showing the AI
+web page you want to use.
 
 # TROUBLE SHOOTING
 

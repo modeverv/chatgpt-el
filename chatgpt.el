@@ -28,6 +28,7 @@
 ;; C-c E          Select AI engine.
 
 (require 'shr)
+(require 'subr-x)
 
 ;;; User Configuration
 
@@ -140,6 +141,22 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
 (defvar-local chatgpt--monitor-ntries 0)
 (defvar-local chatgpt--last-raw-response nil)
 
+(defvar chatgpt-chat-buffer-name "*chatgpt chat*")
+(defvar chatgpt-chat-raw-buffer-name "*chatgpt chat raw*")
+(defvar chatgpt-chat-progress-buffer-name "*chatgpt chat progress*")
+(defvar chatgpt-chat-progress-window-height 12)
+
+(defvar-local chatgpt-chat--input-marker nil)
+(defvar-local chatgpt-chat--engine nil)
+(defvar-local chatgpt-chat--model nil)
+(defvar-local chatgpt-chat--process nil)
+(defvar-local chatgpt-chat--monitor-process nil)
+(defvar-local chatgpt-chat--monitor-timer nil)
+(defvar-local chatgpt-chat--last-raw-response nil)
+(defvar-local chatgpt-chat--monitor-ntries 0)
+(defvar-local chatgpt-chat--waiting nil)
+(defvar-local chatgpt-chat--last-prompt nil)
+
 (defvar chatgpt-font-lock-keywords
   '(("^[;%].+" . font-lock-comment-face)
     ("^#+.+" . font-lock-function-name-face)
@@ -162,9 +179,31 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
   (font-lock-mode 1)
   (visual-line-mode 1))
 
+(defvar chatgpt-chat-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") 'chatgpt-chat-submit)
+    (define-key map (kbd "C-c C-k") 'chatgpt-chat-cancel)
+    map)
+  "Keymap for `chatgpt-chat-mode'.")
+
+(eval
+ `(define-derived-mode chatgpt-chat-mode
+    ,(if (fboundp 'markdown-mode) 'markdown-mode 'text-mode)
+    "ChatGPT-Chat"
+    "Major mode for a text-only ChatGPT conversation buffer."
+    (visual-line-mode 1)
+    (setq-local comment-start "<!-- ")
+    (setq-local comment-end " -->")))
+(declare-function chatgpt-chat-mode nil)
+
 (defun chatgpt--update-mode-name (status)
   "Update the mode name to reflect the current status."
   (setq mode-name (format "%s %s" chatgpt--model status))
+  (force-mode-line-update))
+
+(defun chatgpt-chat--update-mode-name (status)
+  "Update the chat buffer mode name to reflect STATUS."
+  (setq mode-name (format "ChatGPT-Chat %s" status))
   (force-mode-line-update))
 
 ;;; Buffer Management
@@ -200,6 +239,34 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
       (delete-other-windows)
       (split-window)
       (set-window-buffer (next-window) buf))
+    buf))
+
+(defun chatgpt-chat--ensure-input-section ()
+  "Ensure the chat buffer has a current user input section."
+  (unless (markerp chatgpt-chat--input-marker)
+    (setq chatgpt-chat--input-marker (make-marker)))
+  (when (= (point-min) (point-max))
+    (insert "## User\n\n")
+    (set-marker chatgpt-chat--input-marker (point)))
+  (unless (marker-position chatgpt-chat--input-marker)
+    (goto-char (point-max))
+    (unless (bolp)
+      (insert "\n"))
+    (insert "\n## User\n\n")
+    (set-marker chatgpt-chat--input-marker (point))))
+
+(defun chatgpt-chat--get-buffer ()
+  "Return the chat buffer, creating and initializing it as needed."
+  (let ((buf (get-buffer-create chatgpt-chat-buffer-name)))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'chatgpt-chat-mode)
+        (chatgpt-chat-mode))
+      (setq chatgpt-chat--engine (or chatgpt-chat--engine chatgpt-default-engine))
+      (setq chatgpt-chat--model
+            (or chatgpt-chat--model
+                (cdr (assoc chatgpt-chat--engine chatgpt-model-alist))))
+      (chatgpt-chat--ensure-input-section)
+      (chatgpt-chat--update-mode-name (if chatgpt-chat--waiting "waiting" "idle")))
     buf))
 
 ;;; Utilities
@@ -361,6 +428,10 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
   "Format the contents of the response buffer."
   (goto-char (point-min))
   (insert (format "[%s]\n" chatgpt--model))
+  (chatgpt--monitor-cleanup-buffer))
+
+(defun chatgpt--monitor-cleanup-buffer ()
+  "Apply common cleanup rules to rendered response text."
   (chatgpt--replace-regexp "\n\n\\( *[0-9-] .+?\\)$" "\n\\1")
   (chatgpt--replace-regexp "\\*\\*\\(.+?\\)\\*\\*" "\\1")
   (chatgpt--replace-regexp "’" "'")
@@ -395,7 +466,277 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
             (if (or (string-suffix-p "\nEOF\n" response)
                     (>= chatgpt--monitor-ntries 50))
                 (chatgpt--response-finished)
-              (chatgpt--sched-monitor-event))))))))
+                (chatgpt--sched-monitor-event))))))))
+
+;;; Chat Buffer Workflow
+
+(defun chatgpt-chat--current-query ()
+  "Return the current chat query text."
+  (unless (and (markerp chatgpt-chat--input-marker)
+               (marker-position chatgpt-chat--input-marker))
+    (chatgpt-chat--ensure-input-section))
+  (string-trim
+   (buffer-substring-no-properties chatgpt-chat--input-marker (point-max))))
+
+(defun chatgpt-chat--active-p ()
+  "Return non-nil when the chat buffer is waiting for a response."
+  (or chatgpt-chat--waiting
+      (and chatgpt-chat--process
+           (process-live-p chatgpt-chat--process))
+      (and chatgpt-chat--monitor-process
+           (process-live-p chatgpt-chat--monitor-process))
+      (and chatgpt-chat--monitor-timer
+           (timerp chatgpt-chat--monitor-timer))))
+
+(defun chatgpt-chat--stop-monitor ()
+  "Stop the chat response monitoring process."
+  (when (and chatgpt-chat--monitor-timer (timerp chatgpt-chat--monitor-timer))
+    (cancel-timer chatgpt-chat--monitor-timer)
+    (setq chatgpt-chat--monitor-timer nil))
+  (when (and chatgpt-chat--monitor-process
+             (process-live-p chatgpt-chat--monitor-process))
+    (kill-process chatgpt-chat--monitor-process)))
+
+(defun chatgpt-chat-cancel ()
+  "Cancel the current chat browser polling process, if any."
+  (interactive)
+  (when (and chatgpt-chat--process (process-live-p chatgpt-chat--process))
+    (kill-process chatgpt-chat--process))
+  (chatgpt-chat--stop-monitor)
+  (setq chatgpt-chat--process nil)
+  (setq chatgpt-chat--monitor-process nil)
+  (setq chatgpt-chat--waiting nil)
+  (chatgpt-chat--update-mode-name "idle")
+  (chatgpt-chat--finish-progress "canceled" chatgpt-chat--last-raw-response)
+  (message "ChatGPT chat request canceled."))
+
+(defun chatgpt-chat--sched-monitor-event ()
+  "Schedule a chat monitoring event."
+  (setq chatgpt-chat--monitor-timer
+        (run-with-timer .2 nil 'chatgpt-chat--monitor-event (current-buffer))))
+
+(defun chatgpt-chat--start-monitor ()
+  "Start hidden polling for the chat response."
+  (setq chatgpt-chat--monitor-ntries 0)
+  (setq chatgpt-chat--last-raw-response nil)
+  (chatgpt-chat--show-progress "sending" nil)
+  (chatgpt-chat--sched-monitor-event))
+
+(defun chatgpt-chat--progress-buffer ()
+  "Return the chat progress buffer."
+  (let ((buf (get-buffer-create chatgpt-chat-progress-buffer-name))
+        (model chatgpt-chat--model))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'chatgpt-mode)
+        (chatgpt-mode))
+      (setq chatgpt--model model)
+      (chatgpt--update-mode-name "waiting"))
+    buf))
+
+(defun chatgpt-chat--display-progress-buffer (buf)
+  "Display progress BUF in a small side window without selecting it."
+  (display-buffer-in-side-window
+   buf
+   `((side . bottom)
+     (slot . 1)
+     (window-height . ,chatgpt-chat-progress-window-height))))
+
+(defun chatgpt-chat--show-progress (status raw-response)
+  "Show chat progress STATUS and optional RAW-RESPONSE in a small buffer."
+  (let ((buf (chatgpt-chat--progress-buffer))
+        (model chatgpt-chat--model))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t)
+            (win (get-buffer-window buf)))
+        (let ((last-pnt (and win (window-point win)))
+              (last-start (and win (window-start win))))
+          (erase-buffer)
+          (if (string-empty-p (or raw-response ""))
+              (insert (format "[%s] %s\n\nWaiting for browser response..."
+                              model status))
+            (insert raw-response)
+            (goto-char (point-max))
+            (when (re-search-backward "\nEOF\n\\'" nil t)
+              (replace-match "\n"))
+            (condition-case nil
+                (shr-render-region (point-min) (point-max))
+              (error
+               (chatgpt--replace-regexp "<[^>]+>" "")))
+            (chatgpt--monitor-cleanup-buffer)
+            (goto-char (point-min))
+            (insert (format "[%s] %s\n" model status)))
+          (goto-char (point-min))
+          (when win
+            (set-window-point win (or last-pnt (point-min)))
+            (set-window-start win (or last-start (point-min)))))))
+    (chatgpt-chat--display-progress-buffer buf)))
+
+(defun chatgpt-chat--finish-progress (status raw-response)
+  "Mark the chat progress buffer as finished with STATUS and RAW-RESPONSE."
+  (chatgpt-chat--show-progress status raw-response))
+
+(defun chatgpt-chat--hide-progress-window ()
+  "Hide the visible chat progress window, if any."
+  (when-let ((win (get-buffer-window chatgpt-chat-progress-buffer-name)))
+    (delete-window win)))
+
+(defun chatgpt-chat-submit ()
+  "Submit the current query in the chat buffer."
+  (interactive)
+  (unless (derived-mode-p 'chatgpt-chat-mode)
+    (user-error "This command must be used in a chatgpt chat buffer"))
+  (if (chatgpt-chat--active-p)
+      (message "ChatGPT chat is still waiting for a response.")
+    (let* ((query (chatgpt-chat--current-query))
+           (engine (or chatgpt-chat--engine chatgpt-default-engine))
+           (model (or chatgpt-chat--model
+                      (cdr (assoc engine chatgpt-model-alist)))))
+      (if (string-empty-p query)
+          (message "No query to submit.")
+        (setq chatgpt-chat--engine engine)
+        (setq chatgpt-chat--model model)
+        (setq chatgpt-chat--last-prompt query)
+        (setq chatgpt-chat--waiting t)
+        (chatgpt-chat--update-mode-name "waiting")
+        (chatgpt-chat--show-progress "starting browser" nil)
+        (condition-case err
+            (progn
+              (chatgpt--start-browser)
+              (let* ((proc (start-process "chatgpt-chat-send" nil
+                                          chatgpt-prog "-e" engine "-m" model))
+                     (encoded-query (encode-coding-string query 'utf-8)))
+                (setq chatgpt-chat--process proc)
+                (process-put proc 'target-buffer (current-buffer))
+                (set-process-sentinel proc 'chatgpt-chat--send-process-sentinel)
+                (process-send-string proc (concat encoded-query "\n"))
+                (process-send-eof proc))
+              (chatgpt-chat--stop-monitor)
+              (chatgpt-chat--start-monitor)
+              (message "ChatGPT chat submitted."))
+          (error
+           (setq chatgpt-chat--waiting nil)
+           (chatgpt-chat--update-mode-name "idle")
+           (chatgpt-chat--finish-progress
+            (format "failed: %s" (error-message-string err)) nil)
+           (signal (car err) (cdr err))))))))
+
+(defun chatgpt-chat--send-process-sentinel (proc event)
+  "Handle completion EVENT for the chat send process PROC."
+  (unless (or (string-match-p "finished" event)
+              (string-match-p "exited abnormally with code 0" event))
+    (let ((buf (process-get proc 'target-buffer)))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (message "ChatGPT chat send process: %s" (string-trim event)))))))
+
+(defun chatgpt-chat--monitor-event (buf)
+  "Monitor the hidden browser response for chat buffer BUF."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (setq chatgpt-chat--monitor-timer nil)
+      (let ((raw-buf (get-buffer-create chatgpt-chat-raw-buffer-name))
+            (engine chatgpt-chat--engine))
+        (with-current-buffer raw-buf
+          (erase-buffer))
+        (let* ((default-directory (expand-file-name "~"))
+               (proc (start-process "chatgpt-chat-monitor" raw-buf
+                                    chatgpt-prog "-e" engine "-r")))
+          (setq chatgpt-chat--monitor-process proc)
+          (process-put proc 'target-buffer buf)
+          (set-process-sentinel
+           proc 'chatgpt-chat--monitor-process-sentinel))))))
+
+(defun chatgpt-chat--monitor-process-sentinel (proc event)
+  "Handle completion EVENT for the chat monitor process PROC."
+  (when (string-match-p "finished" event)
+    (let ((buf (process-get proc 'target-buffer)))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (let ((response (with-current-buffer (process-buffer proc)
+                            (buffer-string))))
+            (if (string= response chatgpt-chat--last-raw-response)
+                (setq chatgpt-chat--monitor-ntries
+                      (1+ chatgpt-chat--monitor-ntries))
+              (setq chatgpt-chat--last-raw-response response)
+              (setq chatgpt-chat--monitor-ntries 0))
+            (chatgpt-chat--show-progress
+             (if (string-empty-p response)
+                 "waiting"
+               (format "receiving%s"
+                       (if (> chatgpt-chat--monitor-ntries 0)
+                           (format " unchanged:%d" chatgpt-chat--monitor-ntries)
+                         "")))
+             response)
+            (if (or (string-suffix-p "\nEOF\n" response)
+                    (and (not (string-empty-p response))
+                         (>= chatgpt-chat--monitor-ntries 50)))
+                (chatgpt-chat--response-finished response)
+              (chatgpt-chat--sched-monitor-event))))))))
+
+(defun chatgpt-chat--raw-html-to-text (raw)
+  "Convert RAW browser HTML into readable text for the chat buffer."
+  (with-temp-buffer
+    (insert raw)
+    (goto-char (point-max))
+    (when (re-search-backward "\nEOF\n\\'" nil t)
+      (replace-match "\n"))
+    (condition-case nil
+        (shr-render-region (point-min) (point-max))
+      (error
+       (chatgpt--replace-regexp "<[^>]+>" "")))
+    (chatgpt--monitor-cleanup-buffer)
+    (string-trim (buffer-string))))
+
+(defun chatgpt-chat--append-response (response)
+  "Append finalized assistant RESPONSE and prepare the next user section."
+  (goto-char (point-max))
+  (unless (bolp)
+    (insert "\n"))
+  (insert "\n## Assistant\n\n")
+  (insert (if (string-empty-p response)
+              "(No response text was returned.)"
+            response))
+  (insert "\n\n## User\n\n")
+  (unless (markerp chatgpt-chat--input-marker)
+    (setq chatgpt-chat--input-marker (make-marker)))
+  (set-marker chatgpt-chat--input-marker (point))
+  (goto-char (point)))
+
+(defun chatgpt-chat--save (response)
+  "Save the last chat prompt and RESPONSE using the existing log style."
+  (condition-case nil
+      (let* ((save-silently t)
+             (tstamp (format-time-string "%y%m%d-%H%M%S"))
+             (base (format "~/var/log/chatgpt/%s-%s"
+                           chatgpt-chat--engine tstamp))
+             (prompt chatgpt-chat--last-prompt))
+        (with-temp-buffer
+          (insert (or prompt ""))
+          (write-region (point-min) (point-max) (concat base ".pt")))
+        (with-temp-buffer
+          (insert response)
+          (write-region (point-min) (point-max) (concat base ".rs"))))
+    (error nil)))
+
+(defun chatgpt-chat--response-finished (raw-response)
+  "Finalize RAW-RESPONSE and append it to the visible chat buffer."
+  (chatgpt-chat--stop-monitor)
+  (let ((response (chatgpt-chat--raw-html-to-text raw-response)))
+    (setq chatgpt-chat--waiting nil)
+    (setq chatgpt-chat--process nil)
+    (setq chatgpt-chat--monitor-process nil)
+    (chatgpt-chat--append-response response)
+    (chatgpt-chat--save response)
+    (chatgpt-chat--update-mode-name "idle")
+    (chatgpt-chat--finish-progress "finished" raw-response)
+    (chatgpt-chat--hide-progress-window)
+    (message "ChatGPT chat response finished.")))
+
+(defun chatgpt-chat ()
+  "Open the text-only ChatGPT chat buffer."
+  (interactive)
+  (pop-to-buffer (chatgpt-chat--get-buffer))
+  (goto-char (point-max)))
 
 ;;; Interactive Commands
 
