@@ -71,6 +71,12 @@ CONFIGS = {
            form_sel='span[aria-label="Message Copilot"]',
            button_sel='button[aria-label="Send"], button[aria-label*="Stop"]',
            response_sel='div[data-testid="markdown-reply"]'),
+    'perplexity':
+    Config(url='https://www.perplexity.ai/',
+           form_sel='div#ask-input[contenteditable="true"]',
+           button_sel=
+           'button[aria-label*="停止"], button[aria-label*="Stop"], button[aria-label="送信"], button[aria-label="Submit"]',
+           response_sel='div[id^="markdown-content-"]'),
 }
 
 def usage():
@@ -78,7 +84,7 @@ def usage():
 usage: {sys.argv[0]} [-v] [-I] [-e engine] [-m model] [-s prompt] [-r]
   -v              enable verbose mode
   -I              open the AI engine in the browser and exit
-  -e engine       AI engine to use (e.g., chatgpt, gemini, claude) (default: chatgpt)
+  -e engine       AI engine to use (e.g., chatgpt, gemini, claude, perplexity) (default: chatgpt)
   -m model        specify a model (if supported by the engine)
   -s prompt       submit the specified prompt to the AI engine
   -r              Retrieve the current response in HTML format
@@ -101,10 +107,11 @@ def cdb_send(ws, method, params=None):
 def wait_until_visible(ws, selector):
     js = f"""
 (function() {{
-    const el = document.querySelector('{selector}');
-    if (!el) return false;
-    const style = window.getComputedStyle(el);
-    return (style && style.display !== 'none' && style.visibility !== 'hidden');
+    return Array.from(document.querySelectorAll('{selector}')).some(el => {{
+        const style = window.getComputedStyle(el);
+        return (style && style.display !== 'none' &&
+                style.visibility !== 'hidden');
+    }});
 }})()
 """
     for i in range(DEFAULT_TIMEOUT):
@@ -132,12 +139,26 @@ def send_prompt(config, prompt):
     ws = open_wsocket(config)
 
     wait_until_visible(ws, config.form_sel)
-    js = f"document.querySelector('{config.form_sel}').focus();"
+    js = f"""
+Array.from(document.querySelectorAll('{config.form_sel}'))
+    .find(el => {{
+        const style = window.getComputedStyle(el);
+        return (style && style.display !== 'none' &&
+                style.visibility !== 'hidden');
+    }}).focus();
+"""
     cdb_send(ws, 'Runtime.evaluate', {'expression': js})
     cdb_send(ws, 'Input.insertText', {'text': prompt})
 
     wait_until_visible(ws, config.button_sel)
-    js = f"document.querySelector('{config.button_sel}').click();"
+    js = f"""
+Array.from(document.querySelectorAll('{config.button_sel}'))
+    .find(el => {{
+        const style = window.getComputedStyle(el);
+        return (style && style.display !== 'none' &&
+                style.visibility !== 'hidden' && !el.disabled);
+    }}).click();
+"""
     cdb_send(ws, 'Runtime.evaluate', {'expression': js})
 
 def recv_response(config):
@@ -166,7 +187,7 @@ def recv_response(config):
 """
     resp = cdb_send(ws, 'Runtime.evaluate', {'expression': js})
     state = (resp['result']['result'].get('value') or '').lower()
-    if 'stop' not in state:
+    if 'stop' not in state and '停止' not in state:
         print('EOF')
 
 def main():

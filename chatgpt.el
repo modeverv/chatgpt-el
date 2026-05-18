@@ -63,7 +63,8 @@
     ("openwebui" . "gemma4:26b")
     ("claude" . "ClaudeSonnet-4.5")
     ("copilot" . "Copilot-Auto")
-    ("copilot-enterprise" . "Copilot-Auto")))
+    ("copilot-enterprise" . "Copilot-Auto")
+    ("perplexity" . "Perplexity-Auto")))
 
 (defvar chatgpt-api-model-alist
   '(("chatgpt" . "gpt-5.4-mini")

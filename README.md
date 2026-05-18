@@ -1,11 +1,11 @@
 # NAME
 
-chatgpt-el - interactively access AIs (ChatGPT/Gemini/Claude/Copilot) from Emacs
+chatgpt-el - interactively access AIs (ChatGPT/Gemini/Claude/Copilot/Perplexity) from Emacs
 
 # DESCRIPTION
 
 **chatgpt-el** is an Emacs Lisp program designed to interactively access AIs
-(e.g., ChatGPT, Gemini, Claude, and Copilot) from within Emacs. While those
+(e.g., ChatGPT, Gemini, Claude, Copilot, and Perplexity) from within Emacs. While those
 AIs can be accessed via API interfaces using a programming language like
 Python and several modules, such access has several drawbacks.
 
@@ -81,7 +81,7 @@ You can place `chatgpt-cdp` script anywhere in your system.
 > chromium --remote-debugging-port=9000 --remote-allow-origins=http://127.0.0.1:9000
 ```
 
-2. Visit ChatGPT/Gemini/Claude/Copilot in Chromium/Chrome, and login with
+2. Visit ChatGPT/Gemini/Claude/Copilot/Perplexity in Chromium/Chrome, and login with
    your account.
 
 3. In Emacs, move the point (i.e., the cursor in Emacs) at the end of the
@@ -159,7 +159,7 @@ Content-Type:application/json; charset=UTF-8
 }
 ```
 
-2. Make sure your Chromium visits ChatGPT/Gemini/Claude/Copilot page by
+2. Make sure your Chromium visits ChatGPT/Gemini/Claude/Copilot/Perplexity page by
    running `chatgpt -i`.
 
 ```sh
@@ -169,6 +169,7 @@ Content-Type:application/json; charset=UTF-8
 > ./chatgpt-cdp -e claude -i
 > ./chatgpt-cdp -e copilot -i
 > ./chatgpt-cdp -e copilot-enterprise -i
+> ./chatgpt-cdp -e perplexity -i
 ```
 
 3. Send a prompt (e.g., `hello`) to the AI.
@@ -181,6 +182,9 @@ How can I help you today?</p></div></div>
 > ./chatgpt-cdp -e gemini -s hello
 > ./chatgpt-cdp -e gemini -r
 <div _ngcontent-ng-c3682768483="" class="markdown markdown-main-panel stronger enable-updated-hr-color" id="model-response-message-contentr_d1f3fd77a101a596" dir="ltr" style="--animation-duration: 600ms; --fade-animation-function: linear;"><p data-sourcepos="1:1-1:32">Hello! How can I help you today?</p></div>
+> ./chatgpt-cdp -e perplexity -s hello
+> ./chatgpt-cdp -e perplexity -r
+<div data-renderer="lm"><p class="my-2">Hello! How can I help you today?</p></div>
 ```
 
 This will show the response from the AI, which must be equivalent to that
