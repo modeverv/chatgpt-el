@@ -40,6 +40,15 @@ Use a stable buffer name such as:
 *chatgpt chat*
 ```
 
+For LLM-specific chat buffers, prefer a buffer name that includes the engine,
+session title, and session URL when available:
+
+```elisp
+*ENGINE*
+*ENGINE:TITLE*
+*ENGINE:TITLE:URL*
+```
+
 The buffer should contain a transcript in Markdown-like text:
 
 ```markdown
@@ -60,6 +69,13 @@ The user should type the next query at the end of the buffer. Pressing
 `C-c C-c` submits the text that belongs to the current unfinished `## User`
 section.
 
+`chatgpt-chat` should accept an optional engine argument:
+
+```elisp
+(chatgpt-chat)          ;; use `chatgpt-default-engine'
+(chatgpt-chat "claude") ;; start or switch to a Claude chat buffer
+```
+
 ### Session Auto Save
 
 `chatgpt-chat` should be able to automatically save the visible chat transcript
@@ -77,6 +93,23 @@ after responses complete.
 - Save the visible chat transcript, including YAML front matter and all completed
   user/assistant sections.
 - Keep the existing prompt/response log saving behavior working.
+
+### Session Resume
+
+Saved `chatgpt-chat` session transcripts should be resumable from Emacs.
+
+- Add an interactive command that lists saved Markdown session files from
+  `chatgpt-chat-save-directory`.
+- Show useful metadata from each file's YAML front matter, including title, llm,
+  id, URL, and file modification time where practical.
+- In the list buffer, pressing `RET` on a session should load that transcript
+  into the visible `chatgpt-chat` buffer.
+- Restore chat buffer local state from metadata, including title, id, URL, llm,
+  and save file path.
+- Open the saved URL in the browser/CDP target so the user can continue the
+  browser-side conversation.
+- The resumed chat buffer should continue saving to the same session file after
+  later assistant responses complete.
 
 ### Mode Choice
 

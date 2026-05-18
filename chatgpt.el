@@ -30,6 +30,7 @@
 (require 'shr)
 (require 'subr-x)
 (require 'json)
+(require 'tabulated-list)
 
 ;;; User Configuration
 
@@ -146,9 +147,11 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
 (defvar-local chatgpt--monitor-ntries 0)
 (defvar-local chatgpt--last-raw-response nil)
 
-(defvar chatgpt-chat-buffer-name "*chatgpt chat*")
+(defvar chatgpt-chat-buffer-name "*chatgpt chat*"
+  "Legacy fallback buffer name for `chatgpt-chat'.")
 (defvar chatgpt-chat-raw-buffer-name "*chatgpt chat raw*")
 (defvar chatgpt-chat-progress-buffer-name "*chatgpt chat progress*")
+(defvar chatgpt-chat-list-buffer-name "*chatgpt chat sessions*")
 (defvar chatgpt-chat-progress-window-height 12)
 (defvar chatgpt-chat-save-directory nil
   "Directory where `chatgpt-chat' automatically saves session transcripts.
@@ -201,6 +204,14 @@ the chat session id, and later completed responses overwrite that same file.")
     map)
   "Keymap for `chatgpt-chat-mode'.")
 
+(defvar chatgpt-chat-list-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map (kbd "RET") 'chatgpt-chat-list-resume)
+    (define-key map (kbd "g") 'chatgpt-chat-list-refresh)
+    map)
+  "Keymap for `chatgpt-chat-list-mode'.")
+
 (eval
  `(define-derived-mode chatgpt-chat-mode
     ,(if (fboundp 'markdown-mode) 'markdown-mode 'text-mode)
@@ -210,6 +221,18 @@ the chat session id, and later completed responses overwrite that same file.")
     (setq-local comment-start "<!-- ")
     (setq-local comment-end " -->")))
 (declare-function chatgpt-chat-mode nil)
+
+(define-derived-mode chatgpt-chat-list-mode tabulated-list-mode "ChatGPT-Sessions"
+  "Major mode for selecting saved `chatgpt-chat' sessions."
+  (setq tabulated-list-format
+        [("Modified" 18 t)
+         ("LLM" 12 t)
+         ("Title" 32 t)
+         ("URL" 48 t)
+         ("ID" 0 t)])
+  (setq tabulated-list-padding 2)
+  (setq tabulated-list-sort-key (cons "Modified" t))
+  (tabulated-list-init-header))
 
 (defun chatgpt--update-mode-name (status)
   "Update the mode name to reflect the current status."
@@ -284,20 +307,58 @@ the chat session id, and later completed responses overwrite that same file.")
 
 (defun chatgpt-chat--sync-default-engine ()
   "Sync the chat buffer engine/model from the current Web defaults."
-  (unless (chatgpt-chat--active-p)
-    (setq chatgpt-chat--engine chatgpt-default-engine)
-    (setq chatgpt-chat--model
-          (cdr (assoc chatgpt-chat--engine chatgpt-model-alist)))))
+  (when (and (not (chatgpt-chat--active-p))
+             (string-empty-p (or chatgpt-chat--engine "")))
+    (chatgpt-chat--set-engine chatgpt-default-engine)))
 
-(defun chatgpt-chat--get-buffer ()
+(defun chatgpt-chat--buffer-name (engine &optional title url)
+  "Return the chat buffer name for ENGINE and optional TITLE and URL."
+  (let ((engine (chatgpt-chat--session-value engine))
+        (title (chatgpt-chat--session-value title))
+        (url (chatgpt-chat--session-value url)))
+    (concat
+     "*" engine
+     (unless (string-empty-p title)
+       (concat ":" title))
+     (unless (string-empty-p url)
+       (concat ":" url))
+     "*")))
+
+(defun chatgpt-chat--normalize-engine (engine)
+  "Return normalized chat ENGINE, defaulting when nil or empty."
+  (let ((engine (chatgpt-chat--session-value engine)))
+    (if (string-empty-p engine)
+        chatgpt-default-engine
+      engine)))
+
+(defun chatgpt-chat--set-engine (engine)
+  "Set current chat buffer ENGINE and matching model."
+  (setq chatgpt-chat--engine (chatgpt-chat--normalize-engine engine))
+  (setq chatgpt-chat--model
+        (or (cdr (assoc chatgpt-chat--engine chatgpt-model-alist))
+            chatgpt-chat--engine))
+  (chatgpt-chat--set-front-matter-field "llm" chatgpt-chat--engine))
+
+(defun chatgpt-chat--rename-buffer ()
+  "Rename the current chat buffer from engine and URL metadata."
+  (rename-buffer
+   (chatgpt-chat--buffer-name chatgpt-chat--engine
+                              chatgpt-chat--conversation-title
+                              chatgpt-chat--conversation-url)
+   t))
+
+(defun chatgpt-chat--get-buffer (&optional engine)
   "Return the chat buffer, creating and initializing it as needed."
-  (let ((buf (get-buffer-create chatgpt-chat-buffer-name)))
+  (let* ((engine (chatgpt-chat--normalize-engine engine))
+         (buf (get-buffer-create (chatgpt-chat--buffer-name engine))))
     (with-current-buffer buf
       (unless (derived-mode-p 'chatgpt-chat-mode)
         (chatgpt-chat-mode))
-      (chatgpt-chat--sync-default-engine)
+      (unless (chatgpt-chat--active-p)
+        (chatgpt-chat--set-engine engine))
       (chatgpt-chat--ensure-input-section)
       (chatgpt-chat--ensure-session-fields)
+      (chatgpt-chat--rename-buffer)
       (chatgpt-chat--update-mode-name (if chatgpt-chat--waiting "waiting" "idle")))
     buf))
 
@@ -412,7 +473,8 @@ the chat session id, and later completed responses overwrite that same file.")
      "Title" chatgpt-chat--conversation-title))
   (when (not (string-empty-p chatgpt-chat--conversation-url))
     (chatgpt-chat--set-session-field
-     "URL" chatgpt-chat--conversation-url)))
+     "URL" chatgpt-chat--conversation-url))
+  (chatgpt-chat--rename-buffer))
 
 (defun chatgpt-chat--ensure-session-fields ()
   "Ensure the Session section has known metadata fields."
@@ -443,7 +505,8 @@ the chat session id, and later completed responses overwrite that same file.")
   (when (not (string-empty-p chatgpt-chat--conversation-url))
     (save-excursion
       (chatgpt-chat--set-session-field
-       "URL" chatgpt-chat--conversation-url))))
+       "URL" chatgpt-chat--conversation-url)))
+  (chatgpt-chat--rename-buffer))
 
 ;;; Utilities
 
@@ -969,6 +1032,151 @@ the chat session id, and later completed responses overwrite that same file.")
           (replace-regexp-in-string "\\\\\\\\" "\\\\" value t t))
       value)))
 
+(defun chatgpt-chat--read-session-file (file)
+  "Return metadata plist for saved chat session FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (let* ((title (chatgpt-chat--unquote-yaml-string
+                   (chatgpt-chat--front-matter-field "title")))
+           (id (chatgpt-chat--unquote-yaml-string
+                (chatgpt-chat--front-matter-field "id")))
+           (url (chatgpt-chat--unquote-yaml-string
+                 (chatgpt-chat--front-matter-field "url")))
+           (llm (chatgpt-chat--unquote-yaml-string
+                 (chatgpt-chat--front-matter-field "llm")))
+           (attrs (file-attributes file))
+           (mtime (format-time-string "%Y-%m-%d %H:%M"
+                                      (file-attribute-modification-time attrs))))
+      (list :file file
+            :title (or title "")
+            :id (or id "")
+            :url (or url "")
+            :llm (or llm "")
+            :mtime mtime))))
+
+(defun chatgpt-chat--session-files ()
+  "Return saved chat session files."
+  (when (and chatgpt-chat-save-directory
+             (file-directory-p (expand-file-name chatgpt-chat-save-directory)))
+    (directory-files
+     (expand-file-name chatgpt-chat-save-directory) t "\\.md\\'")))
+
+(defun chatgpt-chat--session-entries ()
+  "Return tabulated list entries for saved chat sessions."
+  (mapcar
+   (lambda (file)
+     (let ((meta (chatgpt-chat--read-session-file file)))
+       (list file
+             (vector
+              (plist-get meta :mtime)
+              (plist-get meta :llm)
+              (or (plist-get meta :title) "")
+              (or (plist-get meta :url) "")
+              (or (plist-get meta :id) "")))))
+   (chatgpt-chat--session-files)))
+
+(defun chatgpt-chat-list-refresh ()
+  "Refresh the saved chat session list."
+  (interactive)
+  (unless chatgpt-chat-save-directory
+    (user-error "Set chatgpt-chat-save-directory first"))
+  (setq tabulated-list-entries (chatgpt-chat--session-entries))
+  (tabulated-list-print t))
+
+(defun chatgpt-chat--set-input-marker-from-transcript ()
+  "Set `chatgpt-chat--input-marker' to the current input section."
+  (unless (markerp chatgpt-chat--input-marker)
+    (setq chatgpt-chat--input-marker (make-marker)))
+  (goto-char (point-max))
+  (if (re-search-backward "^## User\n\n" nil t)
+      (set-marker chatgpt-chat--input-marker (match-end 0))
+    (goto-char (point-max))
+    (unless (bolp)
+      (insert "\n"))
+    (insert "\n## User\n\n")
+    (set-marker chatgpt-chat--input-marker (point))))
+
+(defun chatgpt-chat--navigate-url (engine url)
+  "Navigate the browser/CDP page for ENGINE to URL."
+  (unless (string-empty-p (or url ""))
+    (let ((chatgpt--use-api nil))
+      (chatgpt--start-browser))
+    (let ((proc (start-process "chatgpt-chat-resume-url" nil
+                               chatgpt-prog "-e" engine "-U" url)))
+      (set-process-sentinel
+       proc
+       (lambda (_proc event)
+         (unless (string-match-p "finished" event)
+           (message "ChatGPT chat resume navigation failed: %s"
+                    (string-trim event))))))))
+
+(defun chatgpt-chat-resume-file (file)
+  "Resume a saved chat session from FILE."
+  (interactive
+   (list
+    (read-file-name "Resume chat session: "
+                    (and chatgpt-chat-save-directory
+                         (file-name-as-directory
+                          (expand-file-name chatgpt-chat-save-directory)))
+                    nil t nil
+                    (lambda (name)
+                      (or (file-directory-p name)
+                          (string-suffix-p ".md" name))))))
+  (let* ((file (expand-file-name file))
+         (meta (chatgpt-chat--read-session-file file))
+         (session-engine (chatgpt-chat--session-value (plist-get meta :llm)))
+         (engine (if (string-empty-p session-engine)
+                     chatgpt-default-engine
+                   session-engine))
+         (title (plist-get meta :title))
+         (url (plist-get meta :url))
+         (buf (get-buffer-create (chatgpt-chat--buffer-name engine title url))))
+    (with-current-buffer buf
+      (when (chatgpt-chat--active-p)
+        (chatgpt-chat-cancel))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert-file-contents file))
+      (unless (derived-mode-p 'chatgpt-chat-mode)
+        (chatgpt-chat-mode))
+      (setq chatgpt-chat--engine engine)
+      (setq chatgpt-chat--model
+            (or (cdr (assoc engine chatgpt-model-alist)) engine))
+      (setq chatgpt-chat--conversation-title (plist-get meta :title))
+      (setq chatgpt-chat--conversation-id (plist-get meta :id))
+      (setq chatgpt-chat--conversation-url url)
+      (setq chatgpt-chat--save-file file)
+      (setq chatgpt-chat--waiting nil)
+      (setq chatgpt-chat--process nil)
+      (setq chatgpt-chat--monitor-process nil)
+      (setq chatgpt-chat--monitor-timer nil)
+      (chatgpt-chat--set-input-marker-from-transcript)
+      (chatgpt-chat--update-mode-name "idle"))
+    (pop-to-buffer buf)
+    (goto-char (point-max))
+    (chatgpt-chat--navigate-url engine url)
+    (message "Resumed ChatGPT chat session: %s"
+             (or (plist-get meta :title) file))))
+
+(defun chatgpt-chat-list-resume ()
+  "Resume the saved chat session at point."
+  (interactive)
+  (let ((file (tabulated-list-get-id)))
+    (unless file
+      (user-error "No chat session on this line"))
+    (chatgpt-chat-resume-file file)))
+
+(defun chatgpt-chat-list ()
+  "List saved `chatgpt-chat' sessions."
+  (interactive)
+  (unless chatgpt-chat-save-directory
+    (user-error "Set chatgpt-chat-save-directory first"))
+  (let ((buf (get-buffer-create chatgpt-chat-list-buffer-name)))
+    (with-current-buffer buf
+      (chatgpt-chat-list-mode)
+      (chatgpt-chat-list-refresh))
+    (pop-to-buffer buf)))
+
 (defun chatgpt-chat--current-session-id ()
   "Return the current chat session id."
   (or (and (not (string-empty-p (or chatgpt-chat--conversation-id "")))
@@ -1046,10 +1254,11 @@ the chat session id, and later completed responses overwrite that same file.")
     (chatgpt-chat--hide-progress-window)
     (message "ChatGPT chat response finished.")))
 
-(defun chatgpt-chat ()
-  "Open the text-only ChatGPT chat buffer."
+(defun chatgpt-chat (&optional engine)
+  "Open the text-only ChatGPT chat buffer.
+With optional ENGINE, start or switch to a chat buffer for that LLM."
   (interactive)
-  (pop-to-buffer (chatgpt-chat--get-buffer))
+  (pop-to-buffer (chatgpt-chat--get-buffer engine))
   (goto-char (point-max)))
 
 ;;; Interactive Commands
@@ -1127,14 +1336,17 @@ API engine; without ARG, change the default engine for Web."
 				    engines
 				    nil t)))
     (when (not (string= selected ""))
-      (if use-api
-          (setq chatgpt-default-api-engine selected)
-	(setq chatgpt-default-engine selected)
-        (when-let ((buf (get-buffer chatgpt-chat-buffer-name)))
-          (with-current-buffer buf
-            (chatgpt-chat--sync-default-engine)
-            (chatgpt-chat--update-mode-name
-             (if chatgpt-chat--waiting "waiting" "idle"))))))))
+	      (if use-api
+	          (setq chatgpt-default-api-engine selected)
+		(setq chatgpt-default-engine selected)
+	        (dolist (buf (buffer-list))
+	          (with-current-buffer buf
+	            (when (and (derived-mode-p 'chatgpt-chat-mode)
+	                       (not chatgpt-chat--conversation-url))
+	              (chatgpt-chat--set-engine selected)
+	              (chatgpt-chat--rename-buffer)
+	              (chatgpt-chat--update-mode-name
+	               (if chatgpt-chat--waiting "waiting" "idle")))))))))
 
 ;; (chatgpt-select-api-model)
 (defun chatgpt-select-api-model ()

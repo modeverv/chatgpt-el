@@ -108,8 +108,12 @@ You can place `chatgpt-cdp` script anywhere in your system.
 ## Text-only chat buffer
 
 You can also use a dedicated text-only chat buffer with `M-x chatgpt-chat`.
-This opens `*chatgpt chat*`, where the visible conversation is kept as
-Markdown-like text:
+From Emacs Lisp, `(chatgpt-chat)` opens a chat for `chatgpt-default-engine`,
+while `(chatgpt-chat "claude")` starts or switches to a Claude chat buffer.
+Chat buffers are named like `*chatgpt*`, and after a session URL and title are
+known they are renamed like
+`*chatgpt:Session title:https://chatgpt.com/c/...*`.  The visible
+conversation is kept as Markdown-like text:
 
 ```markdown
 ---
@@ -143,6 +147,11 @@ is complete.  At that point, the current browser `document.title` and
 `# Session` fields when they can be retrieved.  The front matter also records
 the selected LLM engine and an `id` derived from the URL.  Press `C-c C-k` in
 the chat buffer to cancel the current browser polling process.
+
+To save and resume chat sessions, set `chatgpt-chat-save-directory`.  Completed
+responses are saved as Markdown transcripts in that directory.  Run
+`M-x chatgpt-chat-list` to list saved sessions, then press `RET` on a session to
+load the transcript and navigate the browser/CDP page to the saved URL.
 
 The chat buffer uses the same browser/CDP prerequisites as `chatgpt-send`: a
 CDP-enabled browser must be running on port 9000, logged in, and showing the AI

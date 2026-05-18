@@ -81,7 +81,7 @@ CONFIGS = {
 
 def usage():
     die(f"""\
-usage: {sys.argv[0]} [-v] [-I] [-e engine] [-m model] [-s prompt] [-r] [-u] [-T] [-J]
+usage: {sys.argv[0]} [-v] [-I] [-e engine] [-m model] [-s prompt] [-r] [-u] [-T] [-J] [-U url]
   -v              enable verbose mode
   -I              open the AI engine in the browser and exit
   -e engine       AI engine to use (e.g., chatgpt, gemini, claude, perplexity) (default: chatgpt)
@@ -91,6 +91,7 @@ usage: {sys.argv[0]} [-v] [-I] [-e engine] [-m model] [-s prompt] [-r] [-u] [-T]
   -u              Print the current browser page URL
   -T              Print the current browser page title
   -J              Print the current browser page metadata as JSON
+  -U url          Navigate the browser page to url
 """)
 
 id_counter = itertools.count(1)
@@ -217,8 +218,12 @@ def current_metadata(config, engine):
     content = resp['result']['result'].get('value') or '{}'
     print(content)
 
+def navigate_url(config, url):
+    ws = open_wsocket(config)
+    cdb_send(ws, 'Page.navigate', {'url': url})
+
 def main():
-    opt = getopts('vIe:m:s:ruTJ') or usage()
+    opt = getopts('vIe:m:s:ruTJU:') or usage()
     verbose = opt.v
     engine = opt.e.lower() if opt.e else 'chatgpt'
     model = opt.m
@@ -234,6 +239,8 @@ def main():
         current_title(config)
     elif opt.J:
         current_metadata(config, engine)
+    elif opt.U:
+        navigate_url(config, opt.U)
     else:
         prompt = opt.s if opt.s else sys.stdin.read().strip()
         send_prompt(config, prompt)
