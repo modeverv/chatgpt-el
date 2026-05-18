@@ -45,9 +45,10 @@ CONFIGS = {
         '[data-message-author-role="assistant"], .agent-turn article'),
     'gemini':
     Config(url='https://gemini.google.com/',
-           form_sel='div.textarea',
+           form_sel=
+           'div.textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"], div.textarea',
            button_sel=
-           'button[aria-label="Send message"], button[aria-label*="Stop"]',
+           'button[aria-label="Send message"], button[aria-label="プロンプトを送信"], button[aria-label*="送信"], button.send-button.submit, button[aria-label*="Stop"], button[aria-label*="停止"]',
            response_sel='response-container'),
     'openwebui':
     Config(url='http://vcserv:8080/',
@@ -56,9 +57,10 @@ CONFIGS = {
            response_sel='div#response-content-container'),
     'claude':
     Config(url='https://claude.ai/',
-           form_sel='p[data-placeholder]',
+           form_sel=
+           'div[data-testid="chat-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"], p[data-placeholder]',
            button_sel=
-           'button[aria-label="Send message"], button[aria-label*="Stop"]',
+           'button[aria-label="Send message"], button[aria-label="Send Message"], button[aria-label="メッセージを送信"], button[aria-label*="送信"], button[aria-label*="Stop"], button[aria-label*="停止"]',
            response_sel='div[data-test-render-count]'),
     'copilot':
     Config(url='https://copilot.microsoft.com/',
