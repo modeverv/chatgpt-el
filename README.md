@@ -52,6 +52,7 @@ according to your environment.
 (autoload 'chatgpt-send "chatgpt" nil t)
 (autoload 'chatgpt-send-api "chatgpt" nil t)
 (autoload 'chatgpt-chat "chatgpt" nil t)
+(autoload 'chatgpt-chat-list "chatgpt" nil t)
 (autoload 'chatgpt-insert-response "chatgpt" nil t)
 (autoload 'chatgpt-fill "chatgpt" nil t)
 (autoload 'chatgpt-select-engine "chatgpt" nil t)
@@ -150,8 +151,12 @@ the chat buffer to cancel the current browser polling process.
 
 To save and resume chat sessions, set `chatgpt-chat-save-directory`.  Completed
 responses are saved as Markdown transcripts in that directory.  Run
-`M-x chatgpt-chat-list` to list saved sessions, then press `RET` on a session to
-load the transcript and navigate the browser/CDP page to the saved URL.
+`M-x chatgpt-chat-list` (or call `(chatgpt-chat-list)` from Emacs Lisp) to list
+saved sessions.  The session list shows saved Markdown transcripts with their
+front matter metadata where available, including the title, LLM engine, id, URL,
+and file modification time.  Press `RET` on a session to load the transcript and
+navigate the browser/CDP page to the saved URL.  Press `g` in the session list to
+refresh it after adding or changing saved transcripts.
 
 The chat buffer uses the same browser/CDP prerequisites as `chatgpt-send`: a
 CDP-enabled browser must be running on port 9000, logged in, and showing the AI
