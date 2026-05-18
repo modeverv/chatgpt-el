@@ -53,6 +53,7 @@ according to your environment.
 (autoload 'chatgpt-send-api "chatgpt" nil t)
 (autoload 'chatgpt-chat "chatgpt" nil t)
 (autoload 'chatgpt-chat-list "chatgpt" nil t)
+(autoload 'llm "chatgpt" nil t)
 (autoload 'chatgpt-insert-response "chatgpt" nil t)
 (autoload 'chatgpt-fill "chatgpt" nil t)
 (autoload 'chatgpt-select-engine "chatgpt" nil t)
@@ -60,6 +61,7 @@ according to your environment.
 (global-set-key "\C-cb" 'chatgpt-send)
 (global-set-key "\C-cq" 'chatgpt-send-api)
 (global-set-key "\C-cc" 'chatgpt-chat)
+(global-set-key "\C-cl" 'llm)
 (global-set-key "\C-cQ" 'chatgpt-insert-response)
 (global-set-key "\C-cf" 'chatgpt-fill)
 (global-set-key "\C-cE" 'chatgpt-select-engine)
@@ -109,6 +111,9 @@ You can place `chatgpt-cdp` script anywhere in your system.
 ## Text-only chat buffer
 
 You can also use a dedicated text-only chat buffer with `M-x chatgpt-chat`.
+`M-x llm` opens a chooser with quick entries for new Claude and ChatGPT chats,
+an engine picker via `New...`, and the 10 most recently saved sessions to
+resume.
 From Emacs Lisp, `(chatgpt-chat)` opens a chat for `chatgpt-default-engine`,
 while `(chatgpt-chat "claude")` starts or switches to a Claude chat buffer.
 Chat buffers are named like `*chatgpt*`, and after a session URL and title are

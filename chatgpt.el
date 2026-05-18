@@ -30,6 +30,7 @@
 (require 'shr)
 (require 'subr-x)
 (require 'json)
+(require 'seq)
 (require 'tabulated-list)
 
 ;;; User Configuration
@@ -1045,13 +1046,14 @@ the chat session id, and later completed responses overwrite that same file.")
            (llm (chatgpt-chat--unquote-yaml-string
                  (chatgpt-chat--front-matter-field "llm")))
            (attrs (file-attributes file))
-           (mtime (format-time-string "%Y-%m-%d %H:%M"
-                                      (file-attribute-modification-time attrs))))
+           (mtime-time (file-attribute-modification-time attrs))
+           (mtime (format-time-string "%Y-%m-%d %H:%M" mtime-time)))
       (list :file file
             :title (or title "")
             :id (or id "")
             :url (or url "")
             :llm (or llm "")
+            :mtime-time mtime-time
             :mtime mtime))))
 
 (defun chatgpt-chat--session-files ()
@@ -1110,6 +1112,11 @@ the chat session id, and later completed responses overwrite that same file.")
            (message "ChatGPT chat resume navigation failed: %s"
                     (string-trim event))))))))
 
+(defun chatgpt-chat--pop-to-buffer-fullscreen (buffer)
+  "Display BUFFER as the only window in the selected frame."
+  (pop-to-buffer buffer)
+  (delete-other-windows))
+
 (defun chatgpt-chat-resume-file (file)
   "Resume a saved chat session from FILE."
   (interactive
@@ -1152,7 +1159,7 @@ the chat session id, and later completed responses overwrite that same file.")
       (setq chatgpt-chat--monitor-timer nil)
       (chatgpt-chat--set-input-marker-from-transcript)
       (chatgpt-chat--update-mode-name "idle"))
-    (pop-to-buffer buf)
+    (chatgpt-chat--pop-to-buffer-fullscreen buf)
     (goto-char (point-max))
     (chatgpt-chat--navigate-url engine url)
     (message "Resumed ChatGPT chat session: %s"
@@ -1258,8 +1265,74 @@ the chat session id, and later completed responses overwrite that same file.")
   "Open the text-only ChatGPT chat buffer.
 With optional ENGINE, start or switch to a chat buffer for that LLM."
   (interactive)
-  (pop-to-buffer (chatgpt-chat--get-buffer engine))
+  (chatgpt-chat--pop-to-buffer-fullscreen (chatgpt-chat--get-buffer engine))
   (goto-char (point-max)))
+
+(defun llm--recent-chat-sessions (&optional limit)
+  "Return up to LIMIT recent saved `chatgpt-chat' session metadata plists."
+  (let* ((limit (or limit 10))
+         (sessions
+          (sort
+           (mapcar 'chatgpt-chat--read-session-file
+                   (or (chatgpt-chat--session-files) nil))
+           (lambda (a b)
+             (time-less-p (plist-get b :mtime-time)
+                          (plist-get a :mtime-time))))))
+    (if (> (length sessions) limit)
+        (seq-take sessions limit)
+      sessions)))
+
+(defun llm--session-candidate-label (meta)
+  "Return a completion label for saved session META."
+  (let* ((llm (chatgpt-chat--session-value (plist-get meta :llm)))
+         (title (chatgpt-chat--session-value (plist-get meta :title)))
+         (url (chatgpt-chat--session-value (plist-get meta :url)))
+         (id (chatgpt-chat--session-value (plist-get meta :id)))
+         (name (or (unless (string-empty-p title) title)
+                   (unless (string-empty-p url) url)
+                   (unless (string-empty-p id) id)
+                   (file-name-base (plist-get meta :file)))))
+    (format "Resume %s  %s  %s"
+            (plist-get meta :mtime)
+            (if (string-empty-p llm) "-" llm)
+            name)))
+
+(defun llm ()
+  "Select a new or recent saved `chatgpt-chat' session.
+The menu offers common new chat entries first, followed by the 10 most
+recent saved transcripts from `chatgpt-chat-save-directory'."
+  (interactive)
+  (let* ((new-engines '("claude" "chatgpt" "gemini" "perplexity"))
+         (candidates
+          (append
+           (mapcar (lambda (engine)
+                     (propertize (format "New %s" engine)
+                                 'llm-action 'new
+                                 'llm-engine engine))
+                   new-engines)
+           (list (propertize "New..." 'llm-action 'new-select))
+           (mapcar (lambda (meta)
+                     (propertize (llm--session-candidate-label meta)
+                                 'llm-action 'resume
+                                 'llm-file (plist-get meta :file)))
+                   (llm--recent-chat-sessions 10))))
+         (choice (completing-read "LLM: " candidates nil t))
+         (match (seq-find (lambda (candidate)
+                            (string= candidate choice))
+                          candidates))
+         (action (get-text-property 0 'llm-action match)))
+    (pcase action
+      ('new
+       (chatgpt-chat (get-text-property 0 'llm-engine match)))
+      ('new-select
+       (chatgpt-chat
+        (completing-read "New LLM engine: "
+                         (mapcar 'car chatgpt-model-alist) nil t
+                         nil nil chatgpt-default-engine)))
+      ('resume
+       (chatgpt-chat-resume-file (get-text-property 0 'llm-file match)))
+      (_
+       (user-error "Unknown LLM selection: %s" choice)))))
 
 ;;; Interactive Commands
 
