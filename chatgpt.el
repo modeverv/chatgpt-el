@@ -29,10 +29,14 @@
 
 (require 'shr)
 (require 'subr-x)
+(require 'json)
 
 ;;; User Configuration
 
-(defvar chatgpt-prog "~/src/chatgpt-el/chatgpt-cdp")
+(defvar chatgpt--directory
+  (file-name-directory (or load-file-name buffer-file-name default-directory)))
+
+(defvar chatgpt-prog (expand-file-name "chatgpt-cdp" chatgpt--directory))
 (defvar chatgpt-default-engine "chatgpt")
 
 (defvar chatgpt-api-prog "~/src/chatgpt-el/chatgpt-api")
@@ -146,6 +150,11 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
 (defvar chatgpt-chat-raw-buffer-name "*chatgpt chat raw*")
 (defvar chatgpt-chat-progress-buffer-name "*chatgpt chat progress*")
 (defvar chatgpt-chat-progress-window-height 12)
+(defvar chatgpt-chat-save-directory nil
+  "Directory where `chatgpt-chat' automatically saves session transcripts.
+When nil, chat session transcript auto saving is disabled.  When non-nil,
+the first completed assistant response creates a Markdown file named from
+the chat session id, and later completed responses overwrite that same file.")
 
 (defvar-local chatgpt-chat--input-marker nil)
 (defvar-local chatgpt-chat--engine nil)
@@ -158,6 +167,9 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
 (defvar-local chatgpt-chat--waiting nil)
 (defvar-local chatgpt-chat--last-prompt nil)
 (defvar-local chatgpt-chat--conversation-url nil)
+(defvar-local chatgpt-chat--conversation-title nil)
+(defvar-local chatgpt-chat--conversation-id nil)
+(defvar-local chatgpt-chat--save-file nil)
 
 (defvar chatgpt-font-lock-keywords
   '(("^[;%].+" . font-lock-comment-face)
@@ -185,6 +197,7 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-c") 'chatgpt-chat-submit)
     (define-key map (kbd "C-c C-k") 'chatgpt-chat-cancel)
+    (define-key map (kbd "C-c k") 'chatgpt-chat-cancel)
     map)
   "Keymap for `chatgpt-chat-mode'.")
 
@@ -248,12 +261,17 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
   (unless (markerp chatgpt-chat--input-marker)
     (setq chatgpt-chat--input-marker (make-marker)))
   (when (= (point-min) (point-max))
-    (insert "# Session\n\n- URL: \n\n## User\n\n")
+    (insert (chatgpt-chat--front-matter-string nil nil chatgpt-chat--engine)
+            "# Session\n\n- Title: \n- URL: \n\n## User\n\n")
     (set-marker chatgpt-chat--input-marker (point)))
+  (chatgpt-chat--ensure-front-matter)
   (save-excursion
-    (goto-char (point-min))
-    (unless (looking-at-p "# ")
-      (insert "# Session\n\n- URL: \n\n")))
+    (let ((front-matter-end (chatgpt-chat--front-matter-end)))
+      (goto-char front-matter-end)
+      (skip-chars-forward "\n")
+      (unless (looking-at-p "# Session")
+        (goto-char front-matter-end)
+        (insert "# Session\n\n- Title: \n- URL: \n\n"))))
   (unless (marker-position chatgpt-chat--input-marker)
     (goto-char (point-max))
     (if (re-search-backward "^## User\n\n" nil t)
@@ -279,25 +297,153 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
         (chatgpt-chat-mode))
       (chatgpt-chat--sync-default-engine)
       (chatgpt-chat--ensure-input-section)
+      (chatgpt-chat--ensure-session-fields)
       (chatgpt-chat--update-mode-name (if chatgpt-chat--waiting "waiting" "idle")))
     buf))
 
+(defun chatgpt-chat--session-value (value)
+  "Return VALUE normalized for one-line session metadata."
+  (replace-regexp-in-string "[ \t\n\r]+" " " (string-trim (or value ""))))
+
+(defun chatgpt-chat--yaml-string (value)
+  "Return VALUE as a YAML double-quoted scalar."
+  (let ((value (chatgpt-chat--session-value value)))
+    (setq value (replace-regexp-in-string "\\\\" "\\\\\\\\" value t t))
+    (setq value (replace-regexp-in-string "\"" "\\\\\"" value t t))
+    (format "\"%s\"" value)))
+
+(defun chatgpt-chat--session-id (url)
+  "Return the session id derived from URL."
+  (let ((url (chatgpt-chat--session-value url)))
+    (unless (string-empty-p url)
+      (concat "id-" url))))
+
+(defun chatgpt-chat--front-matter-string (title url engine)
+  "Return YAML front matter for TITLE, URL, and ENGINE."
+  (let ((id (chatgpt-chat--session-id url)))
+    (format "---\ntitle: %s\nid: %s\nurl: %s\nllm: %s\n---\n\n"
+            (chatgpt-chat--yaml-string title)
+            (chatgpt-chat--yaml-string id)
+            (chatgpt-chat--yaml-string url)
+            (chatgpt-chat--yaml-string engine))))
+
+(defun chatgpt-chat--front-matter-end ()
+  "Return the buffer position immediately after YAML front matter."
+  (save-excursion
+    (goto-char (point-min))
+    (if (looking-at-p "---\n")
+        (progn
+          (forward-line 1)
+          (if (re-search-forward "^---[ \t]*\n" nil t)
+              (point)
+            (point-min)))
+      (point-min))))
+
+(defun chatgpt-chat--ensure-front-matter ()
+  "Ensure the chat buffer starts with YAML session metadata."
+  (save-excursion
+    (goto-char (point-min))
+    (unless (looking-at-p "---\n")
+      (insert (chatgpt-chat--front-matter-string
+               chatgpt-chat--conversation-title
+               chatgpt-chat--conversation-url
+               chatgpt-chat--engine)))))
+
+(defun chatgpt-chat--set-front-matter-field (field value)
+  "Set front matter FIELD to VALUE."
+  (save-excursion
+    (chatgpt-chat--ensure-front-matter)
+    (goto-char (point-min))
+    (forward-line 1)
+    (let ((end (chatgpt-chat--front-matter-end))
+          (line (format "%s: %s" field (chatgpt-chat--yaml-string value))))
+      (if (re-search-forward
+           (format "^%s:.*$" (regexp-quote field)) end t)
+          (replace-match line t t)
+        (goto-char end)
+        (forward-line -1)
+        (insert line "\n")))))
+
+(defun chatgpt-chat--set-front-matter (title url engine)
+  "Record TITLE, URL, and ENGINE in YAML front matter."
+  (let ((id (chatgpt-chat--session-id url)))
+    (setq chatgpt-chat--conversation-id (chatgpt-chat--session-value id))
+    (chatgpt-chat--set-front-matter-field "title" title)
+    (chatgpt-chat--set-front-matter-field "id" id)
+    (chatgpt-chat--set-front-matter-field "url" url)
+    (chatgpt-chat--set-front-matter-field "llm" engine)))
+
+(defun chatgpt-chat--session-section-end ()
+  "Return the end position of the chat Session section."
+  (save-excursion
+    (goto-char (chatgpt-chat--front-matter-end))
+    (if (re-search-forward "^## " nil t)
+        (match-beginning 0)
+      (point-max))))
+
+(defun chatgpt-chat--set-session-field (field value)
+  "Record FIELD with VALUE in the chat buffer's Session section."
+  (let ((value (chatgpt-chat--session-value value)))
+    (unless (string-empty-p value)
+      (save-excursion
+        (chatgpt-chat--ensure-input-section)
+        (goto-char (point-min))
+        (let ((section-end (chatgpt-chat--session-section-end))
+              (line (format "- %s: %s" field value)))
+          (if (re-search-forward
+               (format "^- %s:.*$" (regexp-quote field)) section-end t)
+              (replace-match line t t)
+            (goto-char section-end)
+            (unless (bolp)
+              (insert "\n"))
+            (insert line "\n")))))))
+
+(defun chatgpt-chat--set-session-metadata (title url)
+  "Record TITLE and URL in the chat buffer's Session section."
+  (setq chatgpt-chat--conversation-title (chatgpt-chat--session-value title))
+  (setq chatgpt-chat--conversation-url (chatgpt-chat--session-value url))
+  (chatgpt-chat--set-front-matter
+   chatgpt-chat--conversation-title
+   chatgpt-chat--conversation-url
+   chatgpt-chat--engine)
+  (chatgpt-chat--ensure-session-fields)
+  (when (not (string-empty-p chatgpt-chat--conversation-title))
+    (chatgpt-chat--set-session-field
+     "Title" chatgpt-chat--conversation-title))
+  (when (not (string-empty-p chatgpt-chat--conversation-url))
+    (chatgpt-chat--set-session-field
+     "URL" chatgpt-chat--conversation-url)))
+
+(defun chatgpt-chat--ensure-session-fields ()
+  "Ensure the Session section has known metadata fields."
+  (save-excursion
+    (chatgpt-chat--ensure-input-section)
+    (goto-char (chatgpt-chat--front-matter-end))
+    (unless (re-search-forward "^- Title:" (chatgpt-chat--session-section-end) t)
+      (goto-char (chatgpt-chat--front-matter-end))
+      (forward-line 1)
+      (insert "\n- Title: \n"))
+    (goto-char (chatgpt-chat--front-matter-end))
+    (unless (re-search-forward "^- URL:" (chatgpt-chat--session-section-end) t)
+      (goto-char (chatgpt-chat--front-matter-end))
+      (if (re-search-forward "^- Title:.*$" (chatgpt-chat--session-section-end) t)
+          (progn
+            (end-of-line)
+            (insert "\n- URL: "))
+        (forward-line 1)
+        (insert "\n- URL: \n")))))
+
 (defun chatgpt-chat--set-session-url (url)
   "Record URL in the chat buffer's Session section."
-  (setq chatgpt-chat--conversation-url url)
-  (when (and url (not (string-empty-p url)))
+  (setq chatgpt-chat--conversation-url (chatgpt-chat--session-value url))
+  (chatgpt-chat--set-front-matter
+   chatgpt-chat--conversation-title
+   chatgpt-chat--conversation-url
+   chatgpt-chat--engine)
+  (when (not (string-empty-p chatgpt-chat--conversation-url))
     (save-excursion
-      (chatgpt-chat--ensure-input-section)
-      (goto-char (point-min))
-      (let ((section-end (save-excursion
-                           (if (re-search-forward "^## " nil t)
-                               (match-beginning 0)
-                             (point-max)))))
-        (if (re-search-forward "^- URL:.*$" section-end t)
-            (replace-match (concat "- URL: " url) t t)
-          (goto-char (point-min))
-          (forward-line 1)
-          (insert "\n- URL: " url "\n"))))))
+      (chatgpt-chat--set-session-field
+       "URL" chatgpt-chat--conversation-url))))
 
 ;;; Utilities
 
@@ -722,13 +868,72 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
 (defun chatgpt-chat--fetch-current-url ()
   "Return the current browser URL for the chat engine, or nil on failure."
   (condition-case nil
-      (with-temp-buffer
-        (let ((status (call-process chatgpt-prog nil t nil
-                                    "-e" chatgpt-chat--engine "-u")))
-          (when (zerop status)
-            (let ((url (string-trim (buffer-string))))
-              (unless (string-empty-p url)
-                url)))))
+      (let ((engine chatgpt-chat--engine))
+        (with-temp-buffer
+          (let ((status (call-process chatgpt-prog nil t nil
+                                      "-e" engine "-u")))
+            (when (zerop status)
+              (let ((url (string-trim (buffer-string))))
+                (unless (string-empty-p url)
+                  url))))))
+    (error nil)))
+
+(defun chatgpt-chat--candidate-cdp-progs ()
+  "Return candidate CDP programs for chat metadata fetches."
+  (let ((local-prog (expand-file-name "chatgpt-cdp" chatgpt--directory))
+        (progs nil))
+    (dolist (prog (list chatgpt-prog local-prog))
+      (when (and (stringp prog) (not (string-empty-p prog)))
+        (let ((expanded (expand-file-name prog))
+              (found (executable-find prog)))
+          (dolist (candidate (delq nil (list expanded found)))
+            (when (and (stringp candidate)
+                       (file-exists-p candidate)
+                       (not (member candidate progs)))
+              (push candidate progs))))))
+    (nreverse progs)))
+
+(defun chatgpt-chat--fetch-current-metadata ()
+  "Return current browser metadata as an alist, or nil on failure."
+  (condition-case err
+      (let ((engine chatgpt-chat--engine)
+            (last-error nil)
+            metadata)
+        (catch 'done
+          (dolist (prog (chatgpt-chat--candidate-cdp-progs))
+            (with-temp-buffer
+              (let ((status (call-process prog nil t nil
+                                          "-e" engine "-J")))
+                (if (zerop status)
+                    (condition-case json-err
+                        (let ((json-object-type 'alist)
+                              (json-array-type 'list)
+                              (json-key-type 'symbol))
+                          (setq metadata (json-read-from-string
+                                          (string-trim (buffer-string))))
+                          (throw 'done metadata))
+                      (error
+                       (setq last-error (error-message-string json-err))))
+                  (setq last-error (string-trim (buffer-string)))))))
+          (when last-error
+            (message "ChatGPT chat metadata fetch failed: %s" last-error))
+          nil))
+    (error
+     (message "ChatGPT chat metadata fetch failed: %s"
+              (error-message-string err))
+     nil)))
+
+(defun chatgpt-chat--fetch-current-title ()
+  "Return the current browser title for the chat engine, or nil on failure."
+  (condition-case nil
+      (let ((engine chatgpt-chat--engine))
+        (with-temp-buffer
+          (let ((status (call-process chatgpt-prog nil t nil
+                                      "-e" engine "-T")))
+            (when (zerop status)
+              (let ((title (chatgpt-chat--session-value (buffer-string))))
+                (unless (string-empty-p title)
+                  title))))))
     (error nil)))
 
 (defun chatgpt-chat--append-response (response)
@@ -745,6 +950,66 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
     (setq chatgpt-chat--input-marker (make-marker)))
   (set-marker chatgpt-chat--input-marker (point))
   (goto-char (point)))
+
+(defun chatgpt-chat--front-matter-field (field)
+  "Return the raw value of front matter FIELD, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((end (chatgpt-chat--front-matter-end)))
+      (when (re-search-forward
+             (format "^%s:[ \t]*\\(.*\\)$" (regexp-quote field)) end t)
+        (string-trim (match-string-no-properties 1))))))
+
+(defun chatgpt-chat--unquote-yaml-string (value)
+  "Return VALUE with simple YAML double quotes removed."
+  (when value
+    (if (string-match-p "\\`\".*\"\\'" value)
+        (let ((value (substring value 1 -1)))
+          (setq value (replace-regexp-in-string "\\\\\"" "\"" value t t))
+          (replace-regexp-in-string "\\\\\\\\" "\\\\" value t t))
+      value)))
+
+(defun chatgpt-chat--current-session-id ()
+  "Return the current chat session id."
+  (or (and (not (string-empty-p (or chatgpt-chat--conversation-id "")))
+           chatgpt-chat--conversation-id)
+      (let ((id (chatgpt-chat--unquote-yaml-string
+                 (chatgpt-chat--front-matter-field "id"))))
+        (unless (string-empty-p (or id ""))
+          id))))
+
+(defun chatgpt-chat--safe-file-stem (id)
+  "Return a file-safe stem derived from session ID."
+  (let* ((hash (secure-hash 'sha1 id))
+         (stem (replace-regexp-in-string
+                "[^[:alnum:]._-]+" "_" (string-trim id))))
+    (setq stem (replace-regexp-in-string "\\`_+\\|_+\\'" "" stem))
+    (when (> (length stem) 180)
+      (setq stem (concat (substring stem 0 180) "_" hash)))
+    (unless (string-empty-p stem)
+      stem)))
+
+(defun chatgpt-chat--session-save-file ()
+  "Return the file where the current chat session should be saved."
+  (when chatgpt-chat-save-directory
+    (or chatgpt-chat--save-file
+        (when-let* ((id (chatgpt-chat--current-session-id))
+                    (stem (chatgpt-chat--safe-file-stem id)))
+          (setq chatgpt-chat--save-file
+                (expand-file-name
+                 (concat stem ".md")
+                 (file-name-as-directory chatgpt-chat-save-directory)))))))
+
+(defun chatgpt-chat--save-session-transcript ()
+  "Save the visible chat transcript to `chatgpt-chat-save-directory'."
+  (condition-case err
+      (when-let ((file (chatgpt-chat--session-save-file)))
+        (make-directory (file-name-directory file) t)
+        (let ((save-silently t))
+          (write-region (point-min) (point-max) file nil 'silent)))
+    (error
+     (message "ChatGPT chat session save failed: %s"
+              (error-message-string err)))))
 
 (defun chatgpt-chat--save (response)
   "Save the last chat prompt and RESPONSE using the existing log style."
@@ -765,14 +1030,17 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
 (defun chatgpt-chat--response-finished (raw-response)
   "Finalize RAW-RESPONSE and append it to the visible chat buffer."
   (chatgpt-chat--stop-monitor)
-  (let ((response (chatgpt-chat--raw-html-to-text raw-response))
-        (url (chatgpt-chat--fetch-current-url)))
+  (let* ((response (chatgpt-chat--raw-html-to-text raw-response))
+         (metadata (chatgpt-chat--fetch-current-metadata))
+         (title (cdr (assoc 'title metadata)))
+         (url (cdr (assoc 'url metadata))))
     (setq chatgpt-chat--waiting nil)
     (setq chatgpt-chat--process nil)
     (setq chatgpt-chat--monitor-process nil)
-    (chatgpt-chat--set-session-url url)
+    (chatgpt-chat--set-session-metadata title url)
     (chatgpt-chat--append-response response)
     (chatgpt-chat--save response)
+    (chatgpt-chat--save-session-transcript)
     (chatgpt-chat--update-mode-name "idle")
     (chatgpt-chat--finish-progress "finished" raw-response)
     (chatgpt-chat--hide-progress-window)

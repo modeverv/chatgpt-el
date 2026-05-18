@@ -112,8 +112,16 @@ This opens `*chatgpt chat*`, where the visible conversation is kept as
 Markdown-like text:
 
 ```markdown
+---
+title: ""
+id: ""
+url: ""
+llm: "chatgpt"
+---
+
 # Session
 
+- Title:
 - URL:
 
 ## User
@@ -130,9 +138,11 @@ Type the next query at the end of the current `## User` section and press
 `chatgpt-el` polls the existing CDP bridge in the hidden
 `*chatgpt chat raw*` buffer and shows the current status in
 `*chatgpt chat progress*`.  The chat buffer is updated only after the response
-is complete.  At that point, the current browser `location.href` is written to
-the `# Session` URL field when it can be retrieved.  Press `C-c C-k` in the chat
-buffer to cancel the current browser polling process.
+is complete.  At that point, the current browser `document.title` and
+`location.href` are written to both the YAML front matter and the visible
+`# Session` fields when they can be retrieved.  The front matter also records
+the selected LLM engine and an `id` derived from the URL.  Press `C-c C-k` in
+the chat buffer to cancel the current browser polling process.
 
 The chat buffer uses the same browser/CDP prerequisites as `chatgpt-send`: a
 CDP-enabled browser must be running on port 9000, logged in, and showing the AI

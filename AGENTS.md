@@ -60,6 +60,24 @@ The user should type the next query at the end of the buffer. Pressing
 `C-c C-c` submits the text that belongs to the current unfinished `## User`
 section.
 
+### Session Auto Save
+
+`chatgpt-chat` should be able to automatically save the visible chat transcript
+after responses complete.
+
+- Add a user-configurable directory variable for chat session saves.
+- Do not create a session file when `chatgpt-chat` is merely opened.
+- When the first assistant response completes, create a Markdown transcript file
+  in the configured directory.
+- Use the chat buffer's `id` attribute as the file identity. If the raw id is not
+  safe as a file name, derive a safe file name from it without changing the
+  buffer-visible id.
+- After the first save, write the same session file again every time a later
+  assistant response completes.
+- Save the visible chat transcript, including YAML front matter and all completed
+  user/assistant sections.
+- Keep the existing prompt/response log saving behavior working.
+
 ### Mode Choice
 
 Prefer deriving the chat mode from `markdown-mode` when it is available.
@@ -248,4 +266,3 @@ Start with Step 1 only. This keeps the first change small and easy to verify:
 
 After that works, implement the actual send and hidden polling in separate
 patches.
-

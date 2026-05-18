@@ -81,7 +81,7 @@ CONFIGS = {
 
 def usage():
     die(f"""\
-usage: {sys.argv[0]} [-v] [-I] [-e engine] [-m model] [-s prompt] [-r] [-u]
+usage: {sys.argv[0]} [-v] [-I] [-e engine] [-m model] [-s prompt] [-r] [-u] [-T] [-J]
   -v              enable verbose mode
   -I              open the AI engine in the browser and exit
   -e engine       AI engine to use (e.g., chatgpt, gemini, claude, perplexity) (default: chatgpt)
@@ -89,6 +89,8 @@ usage: {sys.argv[0]} [-v] [-I] [-e engine] [-m model] [-s prompt] [-r] [-u]
   -s prompt       submit the specified prompt to the AI engine
   -r              Retrieve the current response in HTML format
   -u              Print the current browser page URL
+  -T              Print the current browser page title
+  -J              Print the current browser page metadata as JSON
 """)
 
 id_counter = itertools.count(1)
@@ -197,8 +199,26 @@ def current_url(config):
                     {'expression': 'window.location.href'})
     print(resp['result']['result'].get('value') or '')
 
+def current_title(config):
+    ws = open_wsocket(config)
+    resp = cdb_send(ws, 'Runtime.evaluate',
+                    {'expression': 'document.title'})
+    print(resp['result']['result'].get('value') or '')
+
+def current_metadata(config, engine):
+    ws = open_wsocket(config)
+    resp = cdb_send(ws, 'Runtime.evaluate', {
+        'expression': """JSON.stringify({
+            title: document.title || "",
+            url: window.location.href || "",
+            llm: %s
+        })""" % json.dumps(engine)
+    })
+    content = resp['result']['result'].get('value') or '{}'
+    print(content)
+
 def main():
-    opt = getopts('vIe:m:s:ru') or usage()
+    opt = getopts('vIe:m:s:ruTJ') or usage()
     verbose = opt.v
     engine = opt.e.lower() if opt.e else 'chatgpt'
     model = opt.m
@@ -210,6 +230,10 @@ def main():
         recv_response(config)
     elif opt.u:
         current_url(config)
+    elif opt.T:
+        current_title(config)
+    elif opt.J:
+        current_metadata(config, engine)
     else:
         prompt = opt.s if opt.s else sys.stdin.read().strip()
         send_prompt(config, prompt)
