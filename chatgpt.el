@@ -157,6 +157,7 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
 (defvar-local chatgpt-chat--monitor-ntries 0)
 (defvar-local chatgpt-chat--waiting nil)
 (defvar-local chatgpt-chat--last-prompt nil)
+(defvar-local chatgpt-chat--conversation-url nil)
 
 (defvar chatgpt-font-lock-keywords
   '(("^[;%].+" . font-lock-comment-face)
@@ -247,14 +248,21 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
   (unless (markerp chatgpt-chat--input-marker)
     (setq chatgpt-chat--input-marker (make-marker)))
   (when (= (point-min) (point-max))
-    (insert "## User\n\n")
+    (insert "# Session\n\n- URL: \n\n## User\n\n")
     (set-marker chatgpt-chat--input-marker (point)))
+  (save-excursion
+    (goto-char (point-min))
+    (unless (looking-at-p "# ")
+      (insert "# Session\n\n- URL: \n\n")))
   (unless (marker-position chatgpt-chat--input-marker)
     (goto-char (point-max))
-    (unless (bolp)
-      (insert "\n"))
-    (insert "\n## User\n\n")
-    (set-marker chatgpt-chat--input-marker (point))))
+    (if (re-search-backward "^## User\n\n" nil t)
+        (set-marker chatgpt-chat--input-marker (match-end 0))
+      (goto-char (point-max))
+      (unless (bolp)
+        (insert "\n"))
+      (insert "\n## User\n\n")
+      (set-marker chatgpt-chat--input-marker (point)))))
 
 (defun chatgpt-chat--sync-default-engine ()
   "Sync the chat buffer engine/model from the current Web defaults."
@@ -273,6 +281,23 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
       (chatgpt-chat--ensure-input-section)
       (chatgpt-chat--update-mode-name (if chatgpt-chat--waiting "waiting" "idle")))
     buf))
+
+(defun chatgpt-chat--set-session-url (url)
+  "Record URL in the chat buffer's Session section."
+  (setq chatgpt-chat--conversation-url url)
+  (when (and url (not (string-empty-p url)))
+    (save-excursion
+      (chatgpt-chat--ensure-input-section)
+      (goto-char (point-min))
+      (let ((section-end (save-excursion
+                           (if (re-search-forward "^## " nil t)
+                               (match-beginning 0)
+                             (point-max)))))
+        (if (re-search-forward "^- URL:.*$" section-end t)
+            (replace-match (concat "- URL: " url) t t)
+          (goto-char (point-min))
+          (forward-line 1)
+          (insert "\n- URL: " url "\n"))))))
 
 ;;; Utilities
 
@@ -694,6 +719,18 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
     (chatgpt--monitor-cleanup-buffer)
     (string-trim (buffer-string))))
 
+(defun chatgpt-chat--fetch-current-url ()
+  "Return the current browser URL for the chat engine, or nil on failure."
+  (condition-case nil
+      (with-temp-buffer
+        (let ((status (call-process chatgpt-prog nil t nil
+                                    "-e" chatgpt-chat--engine "-u")))
+          (when (zerop status)
+            (let ((url (string-trim (buffer-string))))
+              (unless (string-empty-p url)
+                url)))))
+    (error nil)))
+
 (defun chatgpt-chat--append-response (response)
   "Append finalized assistant RESPONSE and prepare the next user section."
   (goto-char (point-max))
@@ -728,10 +765,12 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
 (defun chatgpt-chat--response-finished (raw-response)
   "Finalize RAW-RESPONSE and append it to the visible chat buffer."
   (chatgpt-chat--stop-monitor)
-  (let ((response (chatgpt-chat--raw-html-to-text raw-response)))
+  (let ((response (chatgpt-chat--raw-html-to-text raw-response))
+        (url (chatgpt-chat--fetch-current-url)))
     (setq chatgpt-chat--waiting nil)
     (setq chatgpt-chat--process nil)
     (setq chatgpt-chat--monitor-process nil)
+    (chatgpt-chat--set-session-url url)
     (chatgpt-chat--append-response response)
     (chatgpt-chat--save response)
     (chatgpt-chat--update-mode-name "idle")

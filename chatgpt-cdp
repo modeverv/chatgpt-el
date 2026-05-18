@@ -81,13 +81,14 @@ CONFIGS = {
 
 def usage():
     die(f"""\
-usage: {sys.argv[0]} [-v] [-I] [-e engine] [-m model] [-s prompt] [-r]
+usage: {sys.argv[0]} [-v] [-I] [-e engine] [-m model] [-s prompt] [-r] [-u]
   -v              enable verbose mode
   -I              open the AI engine in the browser and exit
   -e engine       AI engine to use (e.g., chatgpt, gemini, claude, perplexity) (default: chatgpt)
   -m model        specify a model (if supported by the engine)
   -s prompt       submit the specified prompt to the AI engine
   -r              Retrieve the current response in HTML format
+  -u              Print the current browser page URL
 """)
 
 id_counter = itertools.count(1)
@@ -190,8 +191,14 @@ def recv_response(config):
     if 'stop' not in state and '停止' not in state:
         print('EOF')
 
+def current_url(config):
+    ws = open_wsocket(config)
+    resp = cdb_send(ws, 'Runtime.evaluate',
+                    {'expression': 'window.location.href'})
+    print(resp['result']['result'].get('value') or '')
+
 def main():
-    opt = getopts('vIe:m:s:r') or usage()
+    opt = getopts('vIe:m:s:ru') or usage()
     verbose = opt.v
     engine = opt.e.lower() if opt.e else 'chatgpt'
     model = opt.m
@@ -201,6 +208,8 @@ def main():
         sys.exit()
     if opt.r:
         recv_response(config)
+    elif opt.u:
+        current_url(config)
     else:
         prompt = opt.s if opt.s else sys.stdin.read().strip()
         send_prompt(config, prompt)
