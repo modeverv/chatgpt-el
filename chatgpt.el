@@ -256,16 +256,20 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
     (insert "\n## User\n\n")
     (set-marker chatgpt-chat--input-marker (point))))
 
+(defun chatgpt-chat--sync-default-engine ()
+  "Sync the chat buffer engine/model from the current Web defaults."
+  (unless (chatgpt-chat--active-p)
+    (setq chatgpt-chat--engine chatgpt-default-engine)
+    (setq chatgpt-chat--model
+          (cdr (assoc chatgpt-chat--engine chatgpt-model-alist)))))
+
 (defun chatgpt-chat--get-buffer ()
   "Return the chat buffer, creating and initializing it as needed."
   (let ((buf (get-buffer-create chatgpt-chat-buffer-name)))
     (with-current-buffer buf
       (unless (derived-mode-p 'chatgpt-chat-mode)
         (chatgpt-chat-mode))
-      (setq chatgpt-chat--engine (or chatgpt-chat--engine chatgpt-default-engine))
-      (setq chatgpt-chat--model
-            (or chatgpt-chat--model
-                (cdr (assoc chatgpt-chat--engine chatgpt-model-alist))))
+      (chatgpt-chat--sync-default-engine)
       (chatgpt-chat--ensure-input-section)
       (chatgpt-chat--update-mode-name (if chatgpt-chat--waiting "waiting" "idle")))
     buf))
@@ -588,38 +592,40 @@ gemma4:26b                5571076f3d70    17 GB     2 weeks ago
     (user-error "This command must be used in a chatgpt chat buffer"))
   (if (chatgpt-chat--active-p)
       (message "ChatGPT chat is still waiting for a response.")
-    (let* ((query (chatgpt-chat--current-query))
-           (engine (or chatgpt-chat--engine chatgpt-default-engine))
-           (model (or chatgpt-chat--model
-                      (cdr (assoc engine chatgpt-model-alist)))))
-      (if (string-empty-p query)
-          (message "No query to submit.")
-        (setq chatgpt-chat--engine engine)
-        (setq chatgpt-chat--model model)
-        (setq chatgpt-chat--last-prompt query)
-        (setq chatgpt-chat--waiting t)
-        (chatgpt-chat--update-mode-name "waiting")
-        (chatgpt-chat--show-progress "starting browser" nil)
-        (condition-case err
-            (progn
-              (chatgpt--start-browser)
-              (let* ((proc (start-process "chatgpt-chat-send" nil
-                                          chatgpt-prog "-e" engine "-m" model))
-                     (encoded-query (encode-coding-string query 'utf-8)))
-                (setq chatgpt-chat--process proc)
-                (process-put proc 'target-buffer (current-buffer))
-                (set-process-sentinel proc 'chatgpt-chat--send-process-sentinel)
-                (process-send-string proc (concat encoded-query "\n"))
-                (process-send-eof proc))
-              (chatgpt-chat--stop-monitor)
-              (chatgpt-chat--start-monitor)
-              (message "ChatGPT chat submitted."))
-          (error
-           (setq chatgpt-chat--waiting nil)
-           (chatgpt-chat--update-mode-name "idle")
-           (chatgpt-chat--finish-progress
-            (format "failed: %s" (error-message-string err)) nil)
-           (signal (car err) (cdr err))))))))
+    (progn
+      (chatgpt-chat--sync-default-engine)
+      (let* ((query (chatgpt-chat--current-query))
+             (engine (or chatgpt-chat--engine chatgpt-default-engine))
+             (model (or chatgpt-chat--model
+                        (cdr (assoc engine chatgpt-model-alist)))))
+        (if (string-empty-p query)
+            (message "No query to submit.")
+          (setq chatgpt-chat--engine engine)
+          (setq chatgpt-chat--model model)
+          (setq chatgpt-chat--last-prompt query)
+          (setq chatgpt-chat--waiting t)
+          (chatgpt-chat--update-mode-name "waiting")
+          (chatgpt-chat--show-progress "starting browser" nil)
+          (condition-case err
+              (progn
+                (chatgpt--start-browser)
+                (let* ((proc (start-process "chatgpt-chat-send" nil
+                                            chatgpt-prog "-e" engine "-m" model))
+                       (encoded-query (encode-coding-string query 'utf-8)))
+                  (setq chatgpt-chat--process proc)
+                  (process-put proc 'target-buffer (current-buffer))
+                  (set-process-sentinel proc 'chatgpt-chat--send-process-sentinel)
+                  (process-send-string proc (concat encoded-query "\n"))
+                  (process-send-eof proc))
+                (chatgpt-chat--stop-monitor)
+                (chatgpt-chat--start-monitor)
+                (message "ChatGPT chat submitted."))
+            (error
+             (setq chatgpt-chat--waiting nil)
+             (chatgpt-chat--update-mode-name "idle")
+             (chatgpt-chat--finish-progress
+              (format "failed: %s" (error-message-string err)) nil)
+             (signal (car err) (cdr err)))))))))
 
 (defun chatgpt-chat--send-process-sentinel (proc event)
   "Handle completion EVENT for the chat send process PROC."
@@ -816,7 +822,12 @@ API engine; without ARG, change the default engine for Web."
     (when (not (string= selected ""))
       (if use-api
           (setq chatgpt-default-api-engine selected)
-	(setq chatgpt-default-engine selected)))))
+	(setq chatgpt-default-engine selected)
+        (when-let ((buf (get-buffer chatgpt-chat-buffer-name)))
+          (with-current-buffer buf
+            (chatgpt-chat--sync-default-engine)
+            (chatgpt-chat--update-mode-name
+             (if chatgpt-chat--waiting "waiting" "idle"))))))))
 
 ;; (chatgpt-select-api-model)
 (defun chatgpt-select-api-model ()
